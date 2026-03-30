@@ -66,6 +66,9 @@ import codexRoutes from './routes/codex.js';
 import geminiRoutes from './routes/gemini.js';
 import pluginsRoutes from './routes/plugins.js';
 import messagesRoutes from './routes/messages.js';
+import e2bRoutes from './routes/e2b.js';
+import { isE2BEnabled } from './providers/e2b/sandbox-manager.js';
+import { createE2BSession, sendMessageToE2BSession, respondE2BPermission, abortE2BSession, isE2BSessionActive, getActiveE2BSessions } from './providers/e2b/session-bridge.js';
 import { createNormalizedMessage } from './providers/types.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
 import { initializeDatabase, sessionNamesDb, applyCustomSessionNames } from './database/db.js';
@@ -74,7 +77,7 @@ import { validateApiKey, authenticateToken, authenticateWebSocket } from './midd
 import { IS_PLATFORM } from './constants/config.js';
 import { getConnectableHost } from '../shared/networkHosts.js';
 
-const VALID_PROVIDERS = ['claude', 'codex', 'cursor', 'gemini'];
+const VALID_PROVIDERS = ['claude', 'codex', 'cursor', 'gemini', 'e2b'];
 
 // File system watchers for provider project/session folders
 const PROVIDER_WATCH_PATHS = [
@@ -403,6 +406,7 @@ app.use('/api/sessions', authenticateToken, messagesRoutes);
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
+app.use('/api/e2b', authenticateToken, e2bRoutes);
 
 // Serve public files (like api-docs.html)
 app.use(express.static(path.join(__dirname, '../public')));
@@ -1513,6 +1517,27 @@ function handleChatConnection(ws, request) {
                 console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
                 console.log('🤖 Model:', data.options?.model || 'default');
                 await spawnGemini(data.command, data.options, writer);
+            } else if (data.type === 'e2b-command') {
+                console.log('[DEBUG] E2B message:', data.command || '[Continue/Resume]');
+                console.log('🌐 Agent:', data.options?.agent || 'claude-code');
+                console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
+                const sessionId = data.options?.sessionId || `e2b_${Date.now()}`;
+                if (!isE2BSessionActive(sessionId)) {
+                    await createE2BSession(sessionId, {
+                        agent: data.options?.agent || 'claude-code',
+                        cwd: data.options?.cwd,
+                        model: data.options?.model,
+                        ws,
+                        onMessage: (msg) => writer.send(msg),
+                    });
+                }
+                if (data.command) {
+                    await sendMessageToE2BSession(sessionId, data.command);
+                }
+            } else if (data.type === 'e2b-permission-response') {
+                if (data.sessionId && data.permissionId) {
+                    await respondE2BPermission(data.sessionId, data.permissionId, data.reply || 'once');
+                }
             } else if (data.type === 'cursor-resume') {
                 // Backward compatibility: treat as cursor-command with resume and no prompt
                 console.log('[DEBUG] Cursor resume session (compat):', data.sessionId);
@@ -1532,6 +1557,9 @@ function handleChatConnection(ws, request) {
                     success = abortCodexSession(data.sessionId);
                 } else if (provider === 'gemini') {
                     success = abortGeminiSession(data.sessionId);
+                } else if (provider === 'e2b') {
+                    await abortE2BSession(data.sessionId);
+                    success = true;
                 } else {
                     // Use Claude Agents SDK
                     success = await abortClaudeSDKSession(data.sessionId);
@@ -1566,6 +1594,8 @@ function handleChatConnection(ws, request) {
                     isActive = isCodexSessionActive(sessionId);
                 } else if (provider === 'gemini') {
                     isActive = isGeminiSessionActive(sessionId);
+                } else if (provider === 'e2b') {
+                    isActive = isE2BSessionActive(sessionId);
                 } else {
                     // Use Claude Agents SDK
                     isActive = isClaudeSDKSessionActive(sessionId);
@@ -1599,7 +1629,8 @@ function handleChatConnection(ws, request) {
                     claude: getActiveClaudeSDKSessions(),
                     cursor: getActiveCursorSessions(),
                     codex: getActiveCodexSessions(),
-                    gemini: getActiveGeminiSessions()
+                    gemini: getActiveGeminiSessions(),
+                    e2b: getActiveE2BSessions()
                 };
                 writer.send({
                     type: 'active-sessions',

@@ -11,7 +11,7 @@
 // ─── Session Provider ────────────────────────────────────────────────────────
 
 /**
- * @typedef {'claude' | 'cursor' | 'codex' | 'gemini'} SessionProvider
+ * @typedef {'claude' | 'cursor' | 'codex' | 'gemini' | 'e2b'} SessionProvider
  */
 
 // ─── Message Kind ────────────────────────────────────────────────────────────

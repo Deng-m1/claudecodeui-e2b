@@ -123,14 +123,61 @@ export async function connectToSandbox({ baseUrl, token }) {
 
 /**
  * Pause the active sandbox (preserves state, stops billing).
+ * Returns the sandboxId for later resume.
  */
 export async function pauseSandbox() {
   if (!activeSandboxClient) {
     throw new Error('No active E2B sandbox to pause');
   }
-  console.log(`[E2B] Pausing sandbox: ${activeSandboxId}`);
+  const id = activeSandboxId;
+  console.log(`[E2B] Pausing sandbox: ${id}`);
   await activeSandboxClient.pauseSandbox();
-  console.log('[E2B] Sandbox paused');
+  activeSandboxClient = null;
+  activeSandboxId = null;
+  console.log(`[E2B] Sandbox paused: ${id}`);
+  return id;
+}
+
+/**
+ * Resume a previously paused sandbox by its ID.
+ * @param {string} sandboxId - The E2B sandbox ID to resume
+ * @param {Record<string, string>} [envs] - Environment variables
+ * @returns {Promise<import('sandbox-agent').SandboxAgent>}
+ */
+export async function resumeSandbox(sandboxId, envs = {}) {
+  const { SandboxAgent, e2b } = await loadSDK();
+
+  if (activeSandboxClient) {
+    await disposeSandbox();
+  }
+
+  if (!envs.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY) {
+    envs.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+  }
+  if (!envs.OPENAI_API_KEY && process.env.OPENAI_API_KEY) {
+    envs.OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+  }
+
+  const template = process.env.E2B_TEMPLATE || undefined;
+
+  console.log(`[E2B] Resuming sandbox: ${sandboxId}`);
+
+  const e2bProvider = e2b({
+    template,
+    create: { envs },
+    autoPause: true,
+  });
+
+  const client = await SandboxAgent.connect({
+    sandboxId,
+    sandbox: e2bProvider,
+  });
+
+  activeSandboxClient = client;
+  activeSandboxId = sandboxId;
+
+  console.log(`[E2B] Sandbox resumed: ${sandboxId}`);
+  return client;
 }
 
 /**

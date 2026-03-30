@@ -2,6 +2,7 @@ import { useTranslation } from 'react-i18next';
 import { useVersionCheck } from '../../../../../hooks/useVersionCheck';
 import { useCredentialsSettings } from '../../../hooks/useCredentialsSettings';
 import ApiKeysSection from './sections/ApiKeysSection';
+import GitHubOAuthSection from './sections/GitHubOAuthSection';
 import GithubCredentialsSection from './sections/GithubCredentialsSection';
 import NewApiKeyAlert from './sections/NewApiKeyAlert';
 import VersionInfoSection from './sections/VersionInfoSection';
@@ -70,6 +71,8 @@ export default function CredentialsSettingsTab() {
         onToggleApiKey={toggleApiKey}
         onDeleteApiKey={deleteApiKey}
       />
+
+      <GitHubOAuthSection />
 
       <GithubCredentialsSection
         githubCredentials={githubCredentials}

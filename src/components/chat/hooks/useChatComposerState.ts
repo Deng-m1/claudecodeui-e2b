@@ -19,7 +19,7 @@ import type {
   PendingPermissionRequest,
   PermissionMode,
 } from '../types/types';
-import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
+import type { Project, ProjectSession, RuntimeMode, SessionProvider } from '../../../types/app';
 import { escapeRegExp } from '../utils/chatFormatting';
 import { useFileMentions } from './useFileMentions';
 import { type SlashCommand, useSlashCommands } from './useSlashCommands';
@@ -34,6 +34,7 @@ interface UseChatComposerStateArgs {
   selectedSession: ProjectSession | null;
   currentSessionId: string | null;
   provider: SessionProvider;
+  runtimeMode: RuntimeMode;
   permissionMode: PermissionMode | string;
   cyclePermissionMode: () => void;
   cursorModel: string;
@@ -106,6 +107,7 @@ export function useChatComposerState({
   selectedSession,
   currentSessionId,
   provider,
+  runtimeMode,
   permissionMode,
   cyclePermissionMode,
   cursorModel,
@@ -591,7 +593,28 @@ export function useChatComposerState({
       const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
       const sessionSummary = getNotificationSessionSummary(selectedSession, currentInput);
 
-      if (provider === 'cursor') {
+      const currentModel =
+        provider === 'cursor' ? cursorModel :
+        provider === 'codex' ? codexModel :
+        provider === 'gemini' ? geminiModel : claudeModel;
+
+      if (runtimeMode === 'e2b') {
+        sendMessage({
+          type: 'e2b-command',
+          command: messageContent,
+          sessionId: effectiveSessionId,
+          options: {
+            agent: provider,
+            cwd: resolvedProjectPath,
+            projectPath: resolvedProjectPath,
+            sessionId: effectiveSessionId,
+            resume: Boolean(effectiveSessionId),
+            model: currentModel,
+            sessionSummary,
+            permissionMode,
+          },
+        });
+      } else if (provider === 'cursor') {
         sendMessage({
           type: 'cursor-command',
           command: messageContent,
@@ -874,9 +897,9 @@ export function useChatComposerState({
     sendMessage({
       type: 'abort-session',
       sessionId: targetSessionId,
-      provider,
+      provider: runtimeMode === 'e2b' ? 'e2b' : provider,
     });
-  }, [canAbortSession, currentSessionId, pendingViewSessionRef, provider, selectedSession?.id, sendMessage]);
+  }, [canAbortSession, currentSessionId, pendingViewSessionRef, provider, runtimeMode, selectedSession?.id, sendMessage]);
 
   const handleTranscript = useCallback((text: string) => {
     if (!text.trim()) {
@@ -924,14 +947,23 @@ export function useChatComposerState({
       }
 
       validIds.forEach((requestId) => {
-        sendMessage({
-          type: 'claude-permission-response',
-          requestId,
-          allow: Boolean(decision?.allow),
-          updatedInput: decision?.updatedInput,
-          message: decision?.message,
-          rememberEntry: decision?.rememberEntry,
-        });
+        if (runtimeMode === 'e2b') {
+          sendMessage({
+            type: 'e2b-permission-response',
+            requestId,
+            allow: Boolean(decision?.allow),
+            sessionId: currentSessionId,
+          });
+        } else {
+          sendMessage({
+            type: 'claude-permission-response',
+            requestId,
+            allow: Boolean(decision?.allow),
+            updatedInput: decision?.updatedInput,
+            message: decision?.message,
+            rememberEntry: decision?.rememberEntry,
+          });
+        }
       });
 
       setPendingPermissionRequests((previous) => {

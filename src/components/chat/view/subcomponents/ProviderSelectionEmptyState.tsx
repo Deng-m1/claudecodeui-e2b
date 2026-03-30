@@ -1,5 +1,5 @@
 import React from "react";
-import { Check, ChevronDown } from "lucide-react";
+import { Check, ChevronDown, Cloud, Monitor } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import SessionProviderLogo from "../../../llm-logo-provider/SessionProviderLogo";
 import {
@@ -8,7 +8,7 @@ import {
   CODEX_MODELS,
   GEMINI_MODELS,
 } from "../../../../../shared/modelConstants";
-import type { ProjectSession, SessionProvider } from "../../../../types/app";
+import type { ProjectSession, RuntimeMode, SessionProvider } from "../../../../types/app";
 import { NextTaskBanner } from "../../../task-master";
 
 type ProviderSelectionEmptyStateProps = {
@@ -16,6 +16,8 @@ type ProviderSelectionEmptyStateProps = {
   currentSessionId: string | null;
   provider: SessionProvider;
   setProvider: (next: SessionProvider) => void;
+  runtimeMode: RuntimeMode;
+  setRuntimeMode: (mode: RuntimeMode) => void;
   textareaRef: React.RefObject<HTMLTextAreaElement>;
   claudeModel: string;
   setClaudeModel: (model: string) => void;
@@ -100,6 +102,8 @@ export default function ProviderSelectionEmptyState({
   currentSessionId,
   provider,
   setProvider,
+  runtimeMode,
+  setRuntimeMode,
   textareaRef,
   claudeModel,
   setClaudeModel,
@@ -254,6 +258,48 @@ export default function ProviderSelectionEmptyState({
                 }[provider]
               }
             </p>
+          </div>
+
+          {/* Runtime mode toggle */}
+          <div className="mb-5 mt-4">
+            <div className="flex items-center justify-center gap-2 mb-2">
+              <span className="text-sm text-muted-foreground">
+                {t("providerSelection.runtimeMode.label", { defaultValue: "Runtime" })}
+              </span>
+            </div>
+            <div className="flex items-center justify-center">
+              <div className="inline-flex rounded-lg border border-border/60 bg-muted/30 p-0.5">
+                <button
+                  onClick={() => setRuntimeMode("local")}
+                  className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-all duration-150 ${
+                    runtimeMode === "local"
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <Monitor className="h-3.5 w-3.5" />
+                  {t("providerSelection.runtimeMode.local", { defaultValue: "Local" })}
+                </button>
+                <button
+                  onClick={() => setRuntimeMode("e2b")}
+                  className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-all duration-150 ${
+                    runtimeMode === "e2b"
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <Cloud className="h-3.5 w-3.5" />
+                  {t("providerSelection.runtimeMode.e2b", { defaultValue: "E2B Cloud" })}
+                </button>
+              </div>
+            </div>
+            {runtimeMode === "e2b" && (
+              <p className="mt-2 text-center text-xs text-muted-foreground/70">
+                {t("providerSelection.runtimeMode.e2bHint", {
+                  defaultValue: "Agent will run in a remote E2B cloud sandbox",
+                })}
+              </p>
+            )}
           </div>
 
           {/* Task banner */}

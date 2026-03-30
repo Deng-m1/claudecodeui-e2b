@@ -106,8 +106,8 @@
     "apiTokens": "API & Tokens",
     "tasks": "Tasks",
     "notifications": "Notifications",
-    "plugins": "Plugins"
-
+    "plugins": "Plugins",
+    "e2b": "E2B Cloud"
   },
   "notifications": {
     "title": "Notifications",
@@ -497,5 +497,56 @@
     "installAriaLabel": "Plugin git repository URL",
     "tab": "tab",
     "runningStatus": "running"
+  },
+  "e2b": {
+    "title": "E2B Cloud Sandbox",
+    "description": "Run AI coding agents in remote E2B cloud sandboxes instead of locally.",
+    "runtimeMode": "Runtime Mode",
+    "local": {
+      "title": "Local",
+      "description": "Run agents on this machine"
+    },
+    "cloud": {
+      "title": "E2B Cloud",
+      "description": "Run agents in remote cloud sandboxes"
+    },
+    "sandboxStatus": "Sandbox Status",
+    "refresh": "Refresh",
+    "status": {
+      "notConfigured": "Not Configured",
+      "notConfiguredHint": "Set E2B_API_KEY in your .env file to enable cloud sandboxes.",
+      "running": "Running",
+      "idle": "No Active Sandbox"
+    },
+    "availableAgents": "Available agents:",
+    "openInspector": "Open Inspector",
+    "controls": "Sandbox Controls",
+    "createSandbox": "Create Sandbox",
+    "creating": "Creating...",
+    "pauseSandbox": "Pause",
+    "pausing": "Pausing...",
+    "destroySandbox": "Destroy",
+    "destroying": "Destroying...",
+    "initFromRepo": "Initialize from Repository",
+    "initFromRepoHint": "Clone a GitHub repo into a new cloud sandbox.",
+    "createFromRepo": "Create Sandbox from Repo",
+    "cloning": "Cloning...",
+    "savedSandboxes": "Saved Sandboxes",
+    "resume": "Resume",
+    "gitSave": "Save to Git"
+  },
+  "github": {
+    "title": "GitHub Connection",
+    "description": "Connect your GitHub account to browse repositories and initialize cloud sandboxes.",
+    "checking": "Checking connection...",
+    "connected": "Connected",
+    "notConnected": "GitHub not connected",
+    "connectHint": "Connect to browse repos, select branches, and initialize cloud sandboxes.",
+    "connect": "Connect GitHub",
+    "disconnect": "Disconnect",
+    "searchRepos": "Search repositories...",
+    "loadingRepos": "Loading repositories...",
+    "noRepos": "No repositories found",
+    "branch": "Branch:"
   }
 }

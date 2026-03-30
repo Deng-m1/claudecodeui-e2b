@@ -12,6 +12,7 @@ import GitSettingsTab from '../view/tabs/git-settings/GitSettingsTab';
 import NotificationsSettingsTab from '../view/tabs/NotificationsSettingsTab';
 import TasksSettingsTab from '../view/tabs/tasks-settings/TasksSettingsTab';
 import PluginSettingsTab from '../../plugins/view/PluginSettingsTab';
+import E2BSettingsTab from '../view/tabs/e2b-settings/E2BSettingsTab';
 import { useSettingsController } from '../hooks/useSettingsController';
 import { useWebPush } from '../../../hooks/useWebPush';
 import type { SettingsProps } from '../types/types';
@@ -206,6 +207,8 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
               {activeTab === 'api' && <CredentialsSettingsTab />}
 
               {activeTab === 'plugins' && <PluginSettingsTab />}
+
+              {activeTab === 'e2b' && <E2BSettingsTab />}
             </div>
           </main>
         </div>

@@ -116,7 +116,8 @@
     "clickToChangeMode": "点击更改权限模式（或在输入框中按 Tab）",
     "showAllCommands": "显示所有命令",
     "clearInput": "清空输入",
-    "scrollToBottom": "滚动到底部"
+    "scrollToBottom": "滚动到底部",
+    "e2bCloud": "E2B 云端"
   },
   "thinkingMode": {
     "selector": {
@@ -170,6 +171,12 @@
       "codex": "准备好使用带有 {{model}} 的 Codex。请在下方开始输入您的消息。",
       "gemini": "准备好使用带有 {{model}} 的 Gemini。请在下方开始输入您的消息。",
       "default": "请在上方选择一个提供者以开始"
+    },
+    "runtimeMode": {
+      "label": "运行环境",
+      "local": "本地",
+      "e2b": "E2B 云端",
+      "e2bHint": "代理将在远程 E2B 云端沙箱中运行"
     }
   },
   "session": {

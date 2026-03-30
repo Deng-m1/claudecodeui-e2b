@@ -97,3 +97,21 @@ CREATE TABLE IF NOT EXISTS app_config (
     value TEXT NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+-- E2B cloud sandbox records (for pause/resume persistence)
+CREATE TABLE IF NOT EXISTS e2b_sandboxes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    sandbox_id TEXT NOT NULL,
+    repo_url TEXT,
+    branch TEXT,
+    workspace_path TEXT,
+    status TEXT DEFAULT 'running',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_activity DATETIME DEFAULT CURRENT_TIMESTAMP,
+    metadata_json TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_e2b_sandboxes_user_id ON e2b_sandboxes(user_id);
+CREATE INDEX IF NOT EXISTS idx_e2b_sandboxes_status ON e2b_sandboxes(status);

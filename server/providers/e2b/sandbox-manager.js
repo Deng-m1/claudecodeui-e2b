@@ -75,6 +75,10 @@ export async function createSandbox(options = {}) {
   if (process.env.OPENAI_API_KEY && !envs.OPENAI_API_KEY) {
     envs.OPENAI_API_KEY = process.env.OPENAI_API_KEY;
   }
+  // Always inject GITHUB_TOKEN if available (for git push/PR from inside sandbox)
+  if (process.env.GITHUB_TOKEN && !envs.GITHUB_TOKEN) {
+    envs.GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+  }
 
   const template = options.template || process.env.E2B_TEMPLATE || undefined;
 
@@ -94,6 +98,12 @@ export async function createSandbox(options = {}) {
   activeSandboxId = client.sandboxId || null;
 
   console.log(`[E2B] Sandbox created: ${activeSandboxId}`);
+
+  // Auto-configure git credentials if GITHUB_TOKEN was injected
+  if (envs.GITHUB_TOKEN) {
+    await setupGitCredentials(client);
+  }
+
   return client;
 }
 
@@ -157,6 +167,9 @@ export async function resumeSandbox(sandboxId, envs = {}) {
   if (!envs.OPENAI_API_KEY && process.env.OPENAI_API_KEY) {
     envs.OPENAI_API_KEY = process.env.OPENAI_API_KEY;
   }
+  if (process.env.GITHUB_TOKEN && !envs.GITHUB_TOKEN) {
+    envs.GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+  }
 
   const template = process.env.E2B_TEMPLATE || undefined;
 
@@ -177,6 +190,12 @@ export async function resumeSandbox(sandboxId, envs = {}) {
   activeSandboxId = sandboxId;
 
   console.log(`[E2B] Sandbox resumed: ${sandboxId}`);
+
+  // Re-setup git credentials (env vars may have been refreshed)
+  if (envs.GITHUB_TOKEN) {
+    await setupGitCredentials(client);
+  }
+
   return client;
 }
 
@@ -215,6 +234,38 @@ export async function listSandboxAgents() {
   }
   const response = await activeSandboxClient.listAgents();
   return response.agents;
+}
+
+/**
+ * Configure git credentials inside the sandbox so that git push / PR creation works.
+ * Sets up a credential helper that uses GITHUB_TOKEN env var, plus user identity.
+ * @param {import('sandbox-agent').SandboxAgent} client
+ * @param {object} [options]
+ * @param {string} [options.gitName] - git user.name (defaults to 'Claude Code UI')
+ * @param {string} [options.gitEmail] - git user.email (defaults to 'claudecodeui@users.noreply.github.com')
+ */
+export async function setupGitCredentials(client, options = {}) {
+  const gitName = options.gitName || 'Claude Code UI';
+  const gitEmail = options.gitEmail || 'claudecodeui@users.noreply.github.com';
+
+  const script = [
+    // Set git identity
+    `git config --global user.name '${gitName.replace(/'/g, "'\\''")}'`,
+    `git config --global user.email '${gitEmail.replace(/'/g, "'\\''")}'`,
+    // Configure credential helper: uses GITHUB_TOKEN env var for github.com HTTPS auth
+    `git config --global credential.helper '!f() { echo "protocol=https"; echo "host=github.com"; echo "username=x-access-token"; echo "password=$GITHUB_TOKEN"; }; f'`,
+    // Also set the gh CLI token if available
+    `[ -n "$GITHUB_TOKEN" ] && echo "$GITHUB_TOKEN" > /tmp/.gh_token && gh auth login --with-token < /tmp/.gh_token 2>/dev/null; rm -f /tmp/.gh_token`,
+  ].join(' && ');
+
+  try {
+    console.log('[E2B] Setting up git credentials inside sandbox...');
+    await client.runProcess({ cmd: ['bash', '-c', script] });
+    console.log('[E2B] Git credentials configured');
+  } catch (err) {
+    // Non-fatal: git credentials might not be needed for all use cases
+    console.warn('[E2B] Failed to configure git credentials:', err.message);
+  }
 }
 
 /**

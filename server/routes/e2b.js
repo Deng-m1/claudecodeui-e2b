@@ -17,6 +17,7 @@ import {
   listSandboxAgents,
   getSandboxStatus,
   getSandboxClient,
+  setupGitCredentials,
 } from '../providers/e2b/sandbox-manager.js';
 import {
   createE2BSession,
@@ -26,7 +27,7 @@ import {
   isE2BSessionActive,
   getActiveE2BSessions,
 } from '../providers/e2b/session-bridge.js';
-import { e2bSandboxDb, credentialsDb } from '../database/db.js';
+import { e2bSandboxDb, credentialsDb, userDb } from '../database/db.js';
 
 const router = express.Router();
 
@@ -42,8 +43,22 @@ router.get('/status', (req, res) => {
 
 router.post('/sandbox/create', async (req, res) => {
   try {
-    const { template, envs } = req.body || {};
-    await createSandbox({ template, envs });
+    const { template, envs: userEnvs } = req.body || {};
+    const envs = { ...userEnvs };
+    // Inject GitHub OAuth token if user has one connected
+    const githubToken = credentialsDb.getActiveCredential(req.user.id, 'github_oauth');
+    if (githubToken && !envs.GITHUB_TOKEN) {
+      envs.GITHUB_TOKEN = githubToken;
+    }
+    const client = await createSandbox({ template, envs });
+    // Apply user's git identity if configured
+    const gitConfig = userDb.getGitConfig(req.user.id);
+    if (gitConfig?.git_name || gitConfig?.git_email) {
+      await setupGitCredentials(client, {
+        gitName: gitConfig.git_name || undefined,
+        gitEmail: gitConfig.git_email || undefined,
+      });
+    }
     res.json({ success: true, ...getSandboxStatus() });
   } catch (error) {
     console.error('[E2B Route] Create sandbox error:', error);
@@ -85,7 +100,11 @@ router.post('/sandbox/resume', async (req, res) => {
     if (!sandboxId) {
       return res.status(400).json({ success: false, error: 'sandboxId is required' });
     }
-    await resumeSandbox(sandboxId);
+    // Pass GitHub OAuth token so the resumed sandbox can push/PR
+    const githubToken = credentialsDb.getActiveCredential(req.user.id, 'github_oauth');
+    const envs = {};
+    if (githubToken) envs.GITHUB_TOKEN = githubToken;
+    await resumeSandbox(sandboxId, envs);
     e2bSandboxDb.updateStatus(sandboxId, 'running');
     res.json({ success: true, ...getSandboxStatus() });
   } catch (error) {
@@ -125,13 +144,23 @@ router.post('/sandbox/create-with-repo', async (req, res) => {
       envs.GITHUB_TOKEN = githubToken;
     }
 
-    // Create sandbox
+    // Create sandbox (this also sets up git credential helper via setupGitCredentials)
     const client = await createSandbox({ template, envs });
 
-    // Build clone URL with token for private repos
+    // Re-run credential setup with user's real git identity if configured
+    const gitConfig = userDb.getGitConfig(req.user.id);
+    if (gitConfig?.git_name || gitConfig?.git_email) {
+      await setupGitCredentials(client, {
+        gitName: gitConfig.git_name || undefined,
+        gitEmail: gitConfig.git_email || undefined,
+      });
+    }
+
+    // Normalize clone URL to plain HTTPS (credential helper provides auth)
     let cloneUrl = repoUrl;
-    if (githubToken && repoUrl.startsWith('https://github.com/')) {
-      cloneUrl = repoUrl.replace('https://github.com/', `https://x-access-token:${githubToken}@github.com/`);
+    if (!cloneUrl.startsWith('https://')) {
+      // Convert git@github.com:owner/repo.git -> https://github.com/owner/repo.git
+      cloneUrl = cloneUrl.replace(/^git@github\.com:/, 'https://github.com/');
     }
 
     // Extract repo name from URL
@@ -139,7 +168,7 @@ router.post('/sandbox/create-with-repo', async (req, res) => {
     const workspacePath = `/home/user/${repoName}`;
     const branchArg = branch ? `--branch ${branch}` : '';
 
-    // Run git clone inside sandbox
+    // Run git clone inside sandbox (credential helper handles authentication)
     console.log(`[E2B] Cloning ${repoUrl} (branch: ${branch || 'default'}) into sandbox...`);
     await client.runProcess({
       cmd: ['bash', '-c', `git clone ${branchArg} '${cloneUrl}' '${workspacePath}' 2>&1`],

@@ -177,6 +177,22 @@
       "local": "本地",
       "e2b": "E2B 云端",
       "e2bHint": "代理将在远程 E2B 云端沙箱中运行"
+    },
+    "e2bCloud": {
+      "title": "云端会话",
+      "description": "在云端沙箱中运行代理，支持 GitHub 仓库",
+      "connectGithubTitle": "连接 GitHub 以开始",
+      "connectGithubDesc": "关联你的 GitHub 账号，将仓库克隆到云端沙箱",
+      "connectGithub": "连接 GitHub",
+      "repository": "仓库",
+      "searchRepos": "搜索仓库...",
+      "branch": "分支",
+      "agent": "代理",
+      "start": "启动云端会话",
+      "creating": "正在创建沙箱...",
+      "hint": "代理在远程 E2B 云端沙箱中运行，支持完整的 git 操作",
+      "loading": "加载中...",
+      "noRepos": "未找到仓库"
     }
   },
   "session": {

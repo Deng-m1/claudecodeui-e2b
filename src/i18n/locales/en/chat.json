@@ -195,6 +195,22 @@
       "local": "Local",
       "e2b": "E2B Cloud",
       "e2bHint": "Agent will run in a remote E2B cloud sandbox"
+    },
+    "e2bCloud": {
+      "title": "Cloud Session",
+      "description": "Run your agent in a cloud sandbox with a GitHub repo",
+      "connectGithubTitle": "Connect GitHub to get started",
+      "connectGithubDesc": "Link your GitHub account to clone repos into cloud sandboxes",
+      "connectGithub": "Connect GitHub",
+      "repository": "Repository",
+      "searchRepos": "Search repositories...",
+      "branch": "Branch",
+      "agent": "Agent",
+      "start": "Start Cloud Session",
+      "creating": "Creating sandbox...",
+      "hint": "Agent runs in a remote E2B cloud sandbox with full git access",
+      "loading": "Loading...",
+      "noRepos": "No repositories found"
     }
   },
   "session": {

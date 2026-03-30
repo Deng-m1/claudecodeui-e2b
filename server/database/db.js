@@ -615,6 +615,41 @@ const githubTokensDb = {
   }
 };
 
+// E2B sandbox persistence operations
+const e2bSandboxDb = {
+  create: (userId, sandboxId, { repoUrl = null, branch = null, workspacePath = null, metadata = null } = {}) => {
+    const stmt = db.prepare(
+      'INSERT INTO e2b_sandboxes (user_id, sandbox_id, repo_url, branch, workspace_path, status, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    );
+    const result = stmt.run(userId, sandboxId, repoUrl, branch, workspacePath, 'running', metadata ? JSON.stringify(metadata) : null);
+    return result.lastInsertRowid;
+  },
+
+  updateStatus: (sandboxId, status) => {
+    db.prepare('UPDATE e2b_sandboxes SET status = ?, last_activity = CURRENT_TIMESTAMP WHERE sandbox_id = ?').run(status, sandboxId);
+  },
+
+  getByUser: (userId) => {
+    return db.prepare('SELECT * FROM e2b_sandboxes WHERE user_id = ? ORDER BY last_activity DESC').all(userId);
+  },
+
+  getActive: (userId) => {
+    return db.prepare("SELECT * FROM e2b_sandboxes WHERE user_id = ? AND status IN ('running', 'paused') ORDER BY last_activity DESC").all(userId);
+  },
+
+  getBySandboxId: (sandboxId) => {
+    return db.prepare('SELECT * FROM e2b_sandboxes WHERE sandbox_id = ?').get(sandboxId);
+  },
+
+  delete: (id) => {
+    db.prepare('DELETE FROM e2b_sandboxes WHERE id = ?').run(id);
+  },
+
+  deleteBySandboxId: (sandboxId) => {
+    db.prepare('DELETE FROM e2b_sandboxes WHERE sandbox_id = ?').run(sandboxId);
+  },
+};
+
 export {
   db,
   initializeDatabase,
@@ -626,5 +661,6 @@ export {
   sessionNamesDb,
   applyCustomSessionNames,
   appConfigDb,
-  githubTokensDb // Backward compatibility
+  githubTokensDb,
+  e2bSandboxDb,
 };

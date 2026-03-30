@@ -134,7 +134,8 @@
     "clickToChangeMode": "Click to change permission mode (or press Tab in input)",
     "showAllCommands": "Show all commands",
     "clearInput": "Clear input",
-    "scrollToBottom": "Scroll to bottom"
+    "scrollToBottom": "Scroll to bottom",
+    "e2bCloud": "E2B Cloud"
   },
   "thinkingMode": {
     "selector": {
@@ -188,6 +189,12 @@
       "codex": "Ready to use Codex with {{model}}. Start typing your message below.",
       "gemini": "Ready to use Gemini with {{model}}. Start typing your message below.",
       "default": "Select a provider above to begin"
+    },
+    "runtimeMode": {
+      "label": "Runtime",
+      "local": "Local",
+      "e2b": "E2B Cloud",
+      "e2bHint": "Agent will run in a remote E2B cloud sandbox"
     }
   },
   "session": {

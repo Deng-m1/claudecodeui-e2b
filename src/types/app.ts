@@ -1,4 +1,5 @@
 export type SessionProvider = 'claude' | 'cursor' | 'codex' | 'gemini';
+export type RuntimeMode = 'local' | 'e2b';
 
 export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'preview' | `plugin:${string}`;
 

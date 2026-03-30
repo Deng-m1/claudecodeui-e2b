@@ -67,6 +67,7 @@ import geminiRoutes from './routes/gemini.js';
 import pluginsRoutes from './routes/plugins.js';
 import messagesRoutes from './routes/messages.js';
 import e2bRoutes from './routes/e2b.js';
+import githubRoutes from './routes/github.js';
 import { isE2BEnabled } from './providers/e2b/sandbox-manager.js';
 import { createE2BSession, sendMessageToE2BSession, respondE2BPermission, abortE2BSession, isE2BSessionActive, getActiveE2BSessions } from './providers/e2b/session-bridge.js';
 import { createNormalizedMessage } from './providers/types.js';
@@ -407,6 +408,14 @@ app.use('/api/sessions', authenticateToken, messagesRoutes);
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
 app.use('/api/e2b', authenticateToken, e2bRoutes);
+
+// GitHub routes: OAuth authorize/callback are public, rest require auth
+app.use('/api/github', (req, res, next) => {
+  if (req.path.startsWith('/oauth/authorize') || req.path.startsWith('/oauth/callback')) {
+    return next();
+  }
+  return authenticateToken(req, res, next);
+}, githubRoutes);
 
 // Serve public files (like api-docs.html)
 app.use(express.static(path.join(__dirname, '../public')));

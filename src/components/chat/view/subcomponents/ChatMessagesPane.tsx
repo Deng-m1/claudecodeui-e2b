@@ -2,7 +2,7 @@ import { useTranslation } from 'react-i18next';
 import { useCallback, useRef } from 'react';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
 import type { ChatMessage } from '../../types/types';
-import type { Project, ProjectSession, SessionProvider } from '../../../../types/app';
+import type { Project, ProjectSession, RuntimeMode, SessionProvider } from '../../../../types/app';
 import { getIntrinsicMessageKey } from '../../utils/messageKeys';
 import MessageComponent from './MessageComponent';
 import ProviderSelectionEmptyState from './ProviderSelectionEmptyState';
@@ -18,6 +18,8 @@ interface ChatMessagesPaneProps {
   currentSessionId: string | null;
   provider: SessionProvider;
   setProvider: (provider: SessionProvider) => void;
+  runtimeMode: RuntimeMode;
+  setRuntimeMode: (mode: RuntimeMode) => void;
   textareaRef: RefObject<HTMLTextAreaElement>;
   claudeModel: string;
   setClaudeModel: (model: string) => void;
@@ -64,6 +66,8 @@ export default function ChatMessagesPane({
   currentSessionId,
   provider,
   setProvider,
+  runtimeMode,
+  setRuntimeMode,
   textareaRef,
   claudeModel,
   setClaudeModel,
@@ -148,6 +152,8 @@ export default function ChatMessagesPane({
           currentSessionId={currentSessionId}
           provider={provider}
           setProvider={setProvider}
+          runtimeMode={runtimeMode}
+          setRuntimeMode={setRuntimeMode}
           textareaRef={textareaRef}
           claudeModel={claudeModel}
           setClaudeModel={setClaudeModel}

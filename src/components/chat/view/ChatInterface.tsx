@@ -75,6 +75,8 @@ function ChatInterface({
     pendingPermissionRequests,
     setPendingPermissionRequests,
     cyclePermissionMode,
+    runtimeMode,
+    setRuntimeMode,
   } = useChatProviderState({
     selectedSession,
   });
@@ -175,6 +177,7 @@ function ChatInterface({
     selectedSession,
     currentSessionId,
     provider,
+    runtimeMode,
     permissionMode,
     cyclePermissionMode,
     cursorModel,
@@ -305,6 +308,8 @@ function ChatInterface({
           currentSessionId={currentSessionId}
           provider={provider}
           setProvider={(nextProvider) => setProvider(nextProvider as Provider)}
+          runtimeMode={runtimeMode}
+          setRuntimeMode={setRuntimeMode}
           textareaRef={textareaRef}
           claudeModel={claudeModel}
           setClaudeModel={setClaudeModel}
@@ -349,6 +354,7 @@ function ChatInterface({
           isLoading={isLoading}
           onAbortSession={handleAbortSession}
           provider={provider}
+          runtimeMode={runtimeMode}
           permissionMode={permissionMode}
           onModeSwitch={cyclePermissionMode}
           thinkingMode={thinkingMode}

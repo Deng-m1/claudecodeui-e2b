@@ -12,6 +12,7 @@ import type {
   TouchEvent,
 } from 'react';
 import MicButton from '../../../mic-button/view/MicButton';
+import type { RuntimeMode } from '../../../../types/app';
 import type { PendingPermissionRequest, PermissionMode, Provider } from '../../types/types';
 import CommandMenu from './CommandMenu';
 import ClaudeStatus from './ClaudeStatus';
@@ -45,6 +46,7 @@ interface ChatComposerProps {
   isLoading: boolean;
   onAbortSession: () => void;
   provider: Provider | string;
+  runtimeMode?: RuntimeMode;
   permissionMode: PermissionMode | string;
   onModeSwitch: () => void;
   thinkingMode: string;
@@ -102,6 +104,7 @@ export default function ChatComposer({
   isLoading,
   onAbortSession,
   provider,
+  runtimeMode,
   permissionMode,
   onModeSwitch,
   thinkingMode,
@@ -192,6 +195,7 @@ export default function ChatComposer({
           permissionMode={permissionMode}
           onModeSwitch={onModeSwitch}
           provider={provider}
+          runtimeMode={runtimeMode}
           thinkingMode={thinkingMode}
           setThinkingMode={setThinkingMode}
           tokenBudget={tokenBudget}

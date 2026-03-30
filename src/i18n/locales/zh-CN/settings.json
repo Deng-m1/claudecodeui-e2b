@@ -106,8 +106,8 @@
     "apiTokens": "API 和令牌",
     "tasks": "任务",
     "notifications": "通知",
-    "plugins": "插件"
-    
+    "plugins": "插件",
+    "e2b": "E2B 云端"
   },
   "notifications": {
     "title": "通知",
@@ -491,5 +491,56 @@
     "installAriaLabel": "插件 git 仓库 URL",
     "tab": "标签",
     "runningStatus": "运行中"
+  },
+  "e2b": {
+    "title": "E2B 云端沙箱",
+    "description": "在远程 E2B 云端沙箱中运行 AI 编码代理，而非本地运行。",
+    "runtimeMode": "运行模式",
+    "local": {
+      "title": "本地",
+      "description": "在本机运行代理"
+    },
+    "cloud": {
+      "title": "E2B 云端",
+      "description": "在远程云端沙箱中运行代理"
+    },
+    "sandboxStatus": "沙箱状态",
+    "refresh": "刷新",
+    "status": {
+      "notConfigured": "未配置",
+      "notConfiguredHint": "请在 .env 文件中设置 E2B_API_KEY 以启用云端沙箱。",
+      "running": "运行中",
+      "idle": "无活动沙箱"
+    },
+    "availableAgents": "可用代理：",
+    "openInspector": "打开检查器",
+    "controls": "沙箱控制",
+    "createSandbox": "创建沙箱",
+    "creating": "创建中...",
+    "pauseSandbox": "暂停",
+    "pausing": "暂停中...",
+    "destroySandbox": "销毁",
+    "destroying": "销毁中...",
+    "initFromRepo": "从仓库初始化",
+    "initFromRepoHint": "将 GitHub 仓库克隆到新的云端沙箱中。",
+    "createFromRepo": "从仓库创建沙箱",
+    "cloning": "克隆中...",
+    "savedSandboxes": "已保存的沙箱",
+    "resume": "恢复",
+    "gitSave": "保存到 Git"
+  },
+  "github": {
+    "title": "GitHub 连接",
+    "description": "连接您的 GitHub 帐号以浏览仓库并初始化云端沙箱。",
+    "checking": "检查连接中...",
+    "connected": "已连接",
+    "notConnected": "GitHub 未连接",
+    "connectHint": "连接后可浏览仓库、选择分支并初始化云端沙箱。",
+    "connect": "连接 GitHub",
+    "disconnect": "断开连接",
+    "searchRepos": "搜索仓库...",
+    "loadingRepos": "加载仓库中...",
+    "noRepos": "未找到仓库",
+    "branch": "分支："
   }
 }

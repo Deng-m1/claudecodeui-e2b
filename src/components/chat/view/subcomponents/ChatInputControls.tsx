@@ -1,5 +1,7 @@
 import React from 'react';
+import { Cloud } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import type { RuntimeMode } from '../../../../types/app';
 import type { PermissionMode, Provider } from '../../types/types';
 import ThinkingModeSelector from './ThinkingModeSelector';
 import TokenUsagePie from './TokenUsagePie';
@@ -8,6 +10,7 @@ interface ChatInputControlsProps {
   permissionMode: PermissionMode | string;
   onModeSwitch: () => void;
   provider: Provider | string;
+  runtimeMode?: RuntimeMode;
   thinkingMode: string;
   setThinkingMode: React.Dispatch<React.SetStateAction<string>>;
   tokenBudget: { used?: number; total?: number } | null;
@@ -24,6 +27,7 @@ export default function ChatInputControls({
   permissionMode,
   onModeSwitch,
   provider,
+  runtimeMode,
   thinkingMode,
   setThinkingMode,
   tokenBudget,
@@ -39,6 +43,12 @@ export default function ChatInputControls({
 
   return (
     <div className="flex flex-wrap items-center justify-center gap-2 sm:gap-3">
+      {runtimeMode === 'e2b' && (
+        <span className="inline-flex items-center gap-1 rounded-lg border border-sky-300/60 bg-sky-50 px-2.5 py-1 text-sm font-medium text-sky-700 dark:border-sky-600/40 dark:bg-sky-900/15 dark:text-sky-300 sm:px-3 sm:py-1.5">
+          <Cloud className="h-3.5 w-3.5" />
+          {t('input.e2bCloud', { defaultValue: 'E2B Cloud' })}
+        </span>
+      )}
       <button
         type="button"
         onClick={onModeSwitch}

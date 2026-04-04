@@ -1,13 +1,10 @@
 import { useEffect, useRef } from 'react';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import type { PendingPermissionRequest } from '../types/types';
+import type { WebSocketFeedMessage } from '../../../contexts/WebSocketContext';
 import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
 import type { SessionStore, NormalizedMessage } from '../../../stores/useSessionStore';
-
-type PendingViewSession = {
-  sessionId: string | null;
-  startedAt: number;
-};
+import { getPendingViewSessionId, type PendingViewSession } from '../utils/pendingSession';
 
 type LatestChatMessage = {
   type?: string;
@@ -48,6 +45,7 @@ type LatestChatMessage = {
 
 interface UseChatRealtimeHandlersArgs {
   latestMessage: LatestChatMessage | null;
+  messageFeed: WebSocketFeedMessage[];
   provider: SessionProvider;
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
@@ -65,6 +63,8 @@ interface UseChatRealtimeHandlersArgs {
   onSessionInactive?: (sessionId?: string | null) => void;
   onSessionProcessing?: (sessionId?: string | null) => void;
   onSessionNotProcessing?: (sessionId?: string | null) => void;
+  wasSessionMarkedProcessingRecently?: (sessionId?: string | null, windowMs?: number) => boolean;
+  wasSessionMarkedNotProcessingRecently?: (sessionId?: string | null, windowMs?: number) => boolean;
   onReplaceTemporarySession?: (sessionId?: string | null) => void;
   onNavigateToSession?: (sessionId: string) => void;
   onWebSocketReconnect?: () => void;
@@ -77,6 +77,7 @@ interface UseChatRealtimeHandlersArgs {
 
 export function useChatRealtimeHandlers({
   latestMessage,
+  messageFeed,
   provider,
   selectedProject,
   selectedSession,
@@ -94,28 +95,132 @@ export function useChatRealtimeHandlers({
   onSessionInactive,
   onSessionProcessing,
   onSessionNotProcessing,
+  wasSessionMarkedProcessingRecently,
+  wasSessionMarkedNotProcessingRecently,
   onReplaceTemporarySession,
   onNavigateToSession,
   onWebSocketReconnect,
   sessionStore,
 }: UseChatRealtimeHandlersArgs) {
-  const lastProcessedMessageRef = useRef<LatestChatMessage | null>(null);
+  const lastProcessedMessageSequenceRef = useRef(0);
+  const streamStatesRef = useRef<Map<string, {
+    accumulated: string;
+    provider: SessionProvider;
+    timer: number | null;
+  }>>(new Map());
+  const terminalStateRef = useRef<Map<string, number>>(new Map());
+  const projectRefreshTimeoutRef = useRef<number | null>(null);
+  const lastProjectRefreshAtRef = useRef(0);
+
+  const markSessionActive = (sessionId: string | null) => {
+    if (!sessionId) {
+      return;
+    }
+
+    terminalStateRef.current.delete(sessionId);
+    onSessionProcessing?.(sessionId);
+  };
+
+  const markSessionTerminal = (sessionId: string | null) => {
+    if (!sessionId) {
+      return;
+    }
+
+    terminalStateRef.current.set(sessionId, Date.now());
+  };
+
+  const wasRecentlyCompleted = (sessionId: string | null) => {
+    if (!sessionId) {
+      return false;
+    }
+
+    const completedAt = terminalStateRef.current.get(sessionId);
+    if (!completedAt) {
+      return false;
+    }
+
+    return Date.now() - completedAt < 10_000;
+  };
+
+  const scheduleProjectRefresh = (delayMs = 150) => {
+    if (!window.refreshProjects) {
+      return;
+    }
+
+    const minIntervalMs = 800;
+    const elapsed = Date.now() - lastProjectRefreshAtRef.current;
+    const effectiveDelay =
+      elapsed < minIntervalMs ? Math.max(delayMs, minIntervalMs - elapsed) : delayMs;
+
+    if (projectRefreshTimeoutRef.current) {
+      clearTimeout(projectRefreshTimeoutRef.current);
+    }
+
+    projectRefreshTimeoutRef.current = window.setTimeout(() => {
+      projectRefreshTimeoutRef.current = null;
+      lastProjectRefreshAtRef.current = Date.now();
+      void window.refreshProjects?.();
+    }, effectiveDelay);
+  };
 
   useEffect(() => {
-    if (!latestMessage) return;
-    if (lastProcessedMessageRef.current === latestMessage) return;
-    lastProcessedMessageRef.current = latestMessage;
+    return () => {
+      if (projectRefreshTimeoutRef.current) {
+        clearTimeout(projectRefreshTimeoutRef.current);
+        projectRefreshTimeoutRef.current = null;
+      }
+      for (const state of streamStatesRef.current.values()) {
+        if (state.timer) {
+          clearTimeout(state.timer);
+        }
+      }
+      streamStatesRef.current.clear();
+    };
+  }, []);
+
+  // Flush streaming buffers for sessions other than the newly selected one.
+  // This prevents stale stream_delta data from a previous session from leaking
+  // into the current view when switching sessions quickly.
+  const prevSessionIdRef = useRef(selectedSession?.id);
+  useEffect(() => {
+    const prevId = prevSessionIdRef.current;
+    const nextId = selectedSession?.id;
+    prevSessionIdRef.current = nextId;
+
+    if (prevId && prevId !== nextId) {
+      const state = streamStatesRef.current.get(prevId);
+      if (state) {
+        if (state.timer) {
+          clearTimeout(state.timer);
+          state.timer = null;
+        }
+        if (state.accumulated) {
+          sessionStore.updateStreaming(prevId, state.accumulated, state.provider);
+        }
+        sessionStore.finalizeStreaming(prevId);
+        streamStatesRef.current.delete(prevId);
+      }
+    }
+  }, [selectedSession?.id, sessionStore]);
+
+  useEffect(() => {
+    const pendingMessages = messageFeed.filter(
+      (entry) => entry.sequence > lastProcessedMessageSequenceRef.current,
+    );
+
+    if (pendingMessages.length === 0) {
+      return;
+    }
 
     const activeViewSessionId =
-      selectedSession?.id || currentSessionId || pendingViewSessionRef.current?.sessionId || null;
+      selectedSession?.id || getPendingViewSessionId(currentSessionId, pendingViewSessionRef.current);
 
     /* ---------------------------------------------------------------- */
     /*  Legacy messages (no `kind` field) — handle and return           */
     /* ---------------------------------------------------------------- */
 
-    const msg = latestMessage as any;
-
-    if (!msg.kind) {
+    const processMessage = (msg: LatestChatMessage) => {
+      if (!msg.kind) {
       const messageType = String(msg.type || '');
 
       switch (messageType) {
@@ -132,12 +237,54 @@ export function useChatRealtimeHandlers({
           return;
         }
 
+        case 'error': {
+          const errorSessionId =
+            msg.sessionId ||
+            selectedSession?.id ||
+            getPendingViewSessionId(currentSessionId, pendingViewSessionRef.current);
+
+          if (errorSessionId) {
+            sessionStore.appendRealtime(errorSessionId, {
+              id: `legacy_error_${Date.now()}`,
+              sessionId: errorSessionId,
+              timestamp: new Date().toISOString(),
+              provider,
+              kind: 'error',
+              content: msg.error || msg.message || msg.content || 'Unknown error',
+            });
+          }
+
+          onSessionInactive?.(errorSessionId);
+          onSessionNotProcessing?.(errorSessionId);
+
+          if (!errorSessionId || errorSessionId === activeViewSessionId) {
+            setIsLoading(false);
+            setCanAbortSession(false);
+            setClaudeStatus({
+              text: msg.error || msg.message || msg.content || 'Error',
+              tokens: 0,
+              can_interrupt: false,
+            });
+          }
+
+          return;
+        }
+
         case 'session-status': {
           const statusSessionId = msg.sessionId;
           if (!statusSessionId) return;
 
+          const isCurrentSession =
+            statusSessionId === currentSessionId || (selectedSession && statusSessionId === selectedSession.id);
+
           const status = msg.status;
+          const wasRecentlyActivated = wasSessionMarkedProcessingRecently?.(statusSessionId, 2_500) ?? false;
+          const wasRecentlyTerminal = wasRecentlyCompleted(statusSessionId);
+
           if (status) {
+            if (!isCurrentSession || wasRecentlyTerminal) {
+              return;
+            }
             const statusInfo = {
               text: status.text || 'Working...',
               tokens: status.tokens || 0,
@@ -150,14 +297,19 @@ export function useChatRealtimeHandlers({
           }
 
           // Legacy isProcessing format from check-session-status
-          const isCurrentSession =
-            statusSessionId === currentSessionId || (selectedSession && statusSessionId === selectedSession.id);
-
           if (msg.isProcessing) {
+            if (wasRecentlyTerminal) {
+              return;
+            }
             onSessionProcessing?.(statusSessionId);
             if (isCurrentSession) { setIsLoading(true); setCanAbortSession(true); }
             return;
           }
+
+          if (wasRecentlyActivated && !wasRecentlyTerminal) {
+            return;
+          }
+
           onSessionInactive?.(statusSessionId);
           onSessionNotProcessing?.(statusSessionId);
           if (isCurrentSession) {
@@ -172,61 +324,95 @@ export function useChatRealtimeHandlers({
           // Unknown legacy message type — ignore
           return;
       }
-    }
-
-    /* ---------------------------------------------------------------- */
-    /*  NormalizedMessage handling (has `kind` field)                    */
-    /* ---------------------------------------------------------------- */
-
-    const sid = msg.sessionId || activeViewSessionId;
-
-    // --- Streaming: buffer for performance ---
-    if (msg.kind === 'stream_delta') {
-      const text = msg.content || '';
-      if (!text) return;
-      streamBufferRef.current += text;
-      accumulatedStreamRef.current += text;
-      if (!streamTimerRef.current) {
-        streamTimerRef.current = window.setTimeout(() => {
-          streamTimerRef.current = null;
-          if (sid) {
-            sessionStore.updateStreaming(sid, accumulatedStreamRef.current, provider);
-          }
-        }, 100);
       }
-      // Also route to store for non-active sessions
-      if (sid && sid !== activeViewSessionId) {
+
+      /* ---------------------------------------------------------------- */
+      /*  NormalizedMessage handling (has `kind` field)                    */
+      /* ---------------------------------------------------------------- */
+
+      const sid =
+        typeof msg.sessionId === 'string' && msg.sessionId.trim()
+          ? msg.sessionId
+          : null;
+      const msgProvider = (msg.provider || provider) as SessionProvider;
+      const projectName = selectedSession?.__projectName || selectedProject?.name || '';
+      const projectPath =
+        selectedSession?.__projectPath ||
+        selectedProject?.cloud?.workspacePath ||
+        selectedProject?.fullPath ||
+        selectedProject?.path ||
+        '';
+      const isActiveSession = Boolean(sid && activeViewSessionId && sid === activeViewSessionId);
+
+      const flushStreamingSession = (sessionId: string, finalize = false) => {
+        const state = streamStatesRef.current.get(sessionId);
+
+        if (state?.timer) {
+          clearTimeout(state.timer);
+          state.timer = null;
+        }
+
+        if (state?.accumulated) {
+          sessionStore.updateStreaming(sessionId, state.accumulated, state.provider);
+        }
+
+        if (finalize) {
+          sessionStore.finalizeStreaming(sessionId);
+          streamStatesRef.current.delete(sessionId);
+        }
+      };
+
+      // --- Streaming: buffer for performance ---
+      if (msg.kind === 'stream_delta') {
+        const text = msg.content || '';
+        if (!text || !sid) return;
+
+        markSessionActive(sid);
+
+        const existing = streamStatesRef.current.get(sid) || {
+          accumulated: '',
+          provider: msgProvider,
+          timer: null,
+        };
+
+        existing.accumulated += text;
+        existing.provider = msgProvider;
+
+        if (!existing.timer) {
+          existing.timer = window.setTimeout(() => {
+            const latestState = streamStatesRef.current.get(sid);
+            if (!latestState) {
+              return;
+            }
+
+            latestState.timer = null;
+            if (latestState.accumulated) {
+              sessionStore.updateStreaming(sid, latestState.accumulated, latestState.provider);
+            }
+          }, 100);
+        }
+
+        streamStatesRef.current.set(sid, existing);
+        return;
+      }
+
+      if (msg.kind === 'stream_end') {
+        if (sid) {
+          flushStreamingSession(sid, true);
+        }
+        return;
+      }
+
+      // --- All other messages: route to store ---
+      if (sid) {
         sessionStore.appendRealtime(sid, msg as NormalizedMessage);
       }
-      return;
-    }
 
-    if (msg.kind === 'stream_end') {
-      if (streamTimerRef.current) {
-        clearTimeout(streamTimerRef.current);
-        streamTimerRef.current = null;
-      }
-      if (sid) {
-        if (accumulatedStreamRef.current) {
-          sessionStore.updateStreaming(sid, accumulatedStreamRef.current, provider);
-        }
-        sessionStore.finalizeStreaming(sid);
-      }
-      accumulatedStreamRef.current = '';
-      streamBufferRef.current = '';
-      return;
-    }
-
-    // --- All other messages: route to store ---
-    if (sid) {
-      sessionStore.appendRealtime(sid, msg as NormalizedMessage);
-    }
-
-    // --- UI side effects for specific kinds ---
-    switch (msg.kind) {
-      case 'session_created': {
-        const newSessionId = msg.newSessionId;
-        if (!newSessionId) break;
+      // --- UI side effects for specific kinds ---
+      switch (msg.kind) {
+        case 'session_created': {
+          const newSessionId = msg.newSessionId;
+          if (!newSessionId) break;
 
         if (!currentSessionId || currentSessionId.startsWith('new-session-')) {
           sessionStorage.setItem('pendingSessionId', newSessionId);
@@ -239,35 +425,60 @@ export function useChatRealtimeHandlers({
             prev.map((r) => (r.sessionId ? r : { ...r, sessionId: newSessionId })),
           );
         }
+        markSessionActive(newSessionId);
         onNavigateToSession?.(newSessionId);
+        scheduleProjectRefresh();
         break;
       }
 
       case 'complete': {
-        // Flush any remaining streaming state
-        if (streamTimerRef.current) {
-          clearTimeout(streamTimerRef.current);
-          streamTimerRef.current = null;
+        if (sid) {
+          flushStreamingSession(sid, true);
+          setPendingPermissionRequests((prev) => prev.filter((request) => request.sessionId !== sid));
         }
-        if (sid && accumulatedStreamRef.current) {
-          sessionStore.updateStreaming(sid, accumulatedStreamRef.current, provider);
-          sessionStore.finalizeStreaming(sid);
-        }
-        accumulatedStreamRef.current = '';
-        streamBufferRef.current = '';
 
-        setIsLoading(false);
-        setCanAbortSession(false);
-        setClaudeStatus(null);
-        setPendingPermissionRequests([]);
+        markSessionTerminal(sid);
         onSessionInactive?.(sid);
         onSessionNotProcessing?.(sid);
+
+        if (isActiveSession) {
+          setIsLoading(false);
+          setCanAbortSession(false);
+          setClaudeStatus(null);
+        }
 
         // Handle aborted case
         if (msg.aborted) {
           // Abort was requested — the complete event confirms it
           // No special UI action needed beyond clearing loading state above
           // The backend already sent any abort-related messages
+          break;
+        }
+
+        if (sid && msg.actualSessionId && msg.actualSessionId !== sid) {
+          const actualId = msg.actualSessionId;
+
+          if (!pendingViewSessionRef.current || pendingViewSessionRef.current.sessionId === sid) {
+            pendingViewSessionRef.current = {
+              sessionId: actualId,
+              startedAt: pendingViewSessionRef.current?.startedAt || Date.now(),
+            };
+          }
+
+          setCurrentSessionId(actualId);
+          onReplaceTemporarySession?.(actualId);
+          onNavigateToSession?.(actualId);
+          sessionStorage.removeItem('pendingSessionId');
+
+          if (selectedProject) {
+            void sessionStore.refreshFromServer(actualId, {
+              provider: msgProvider,
+              projectName,
+              projectPath,
+            });
+          }
+
+          scheduleProjectRefresh(200);
           break;
         }
 
@@ -280,38 +491,48 @@ export function useChatRealtimeHandlers({
             onNavigateToSession?.(actualId);
           }
           sessionStorage.removeItem('pendingSessionId');
-          if (window.refreshProjects) {
-            setTimeout(() => window.refreshProjects?.(), 500);
-          }
+          scheduleProjectRefresh(500);
         }
         break;
       }
 
       case 'error': {
-        setIsLoading(false);
-        setCanAbortSession(false);
-        setClaudeStatus(null);
+        if (sid) {
+          flushStreamingSession(sid, true);
+          setPendingPermissionRequests((prev) => prev.filter((request) => request.sessionId !== sid));
+        }
+        markSessionTerminal(sid);
         onSessionInactive?.(sid);
         onSessionNotProcessing?.(sid);
+        if (isActiveSession) {
+          setIsLoading(false);
+          setCanAbortSession(false);
+          setClaudeStatus(null);
+        }
         break;
       }
 
       case 'permission_request': {
-        if (!msg.requestId) break;
+        const requestId = msg.requestId;
+        if (!requestId) break;
         setPendingPermissionRequests((prev) => {
-          if (prev.some((r: PendingPermissionRequest) => r.requestId === msg.requestId)) return prev;
+          if (prev.some((r: PendingPermissionRequest) => r.requestId === requestId)) return prev;
           return [...prev, {
-            requestId: msg.requestId,
+            requestId,
             toolName: msg.toolName || 'UnknownTool',
             input: msg.input,
             context: msg.context,
+            provider: msg.provider || provider,
             sessionId: sid || null,
             receivedAt: new Date(),
           }];
         });
-        setIsLoading(true);
-        setCanAbortSession(true);
-        setClaudeStatus({ text: 'Waiting for permission', tokens: 0, can_interrupt: true });
+        markSessionActive(sid);
+        if (isActiveSession) {
+          setIsLoading(true);
+          setCanAbortSession(true);
+          setClaudeStatus({ text: 'Waiting for permission', tokens: 0, can_interrupt: true });
+        }
         break;
       }
 
@@ -323,9 +544,14 @@ export function useChatRealtimeHandlers({
       }
 
       case 'status': {
-        if (msg.text === 'token_budget' && msg.tokenBudget) {
+        if (msg.text === 'token_budget' && msg.tokenBudget && isActiveSession) {
           setTokenBudget(msg.tokenBudget as Record<string, unknown>);
-        } else if (msg.text) {
+        } else if (msg.text && isActiveSession) {
+          if (wasRecentlyCompleted(sid)) {
+            break;
+          }
+
+          markSessionActive(sid);
           setClaudeStatus({
             text: msg.text,
             tokens: msg.tokens || 0,
@@ -339,11 +565,18 @@ export function useChatRealtimeHandlers({
 
       // text, tool_use, tool_result, thinking, interactive_prompt, task_notification
       // → already routed to store above, no UI side effects needed
-      default:
-        break;
+        default:
+          break;
+      }
+    };
+
+    for (const entry of pendingMessages) {
+      lastProcessedMessageSequenceRef.current = entry.sequence;
+      processMessage(entry.message as LatestChatMessage);
     }
   }, [
     latestMessage,
+    messageFeed,
     provider,
     selectedProject,
     selectedSession,
@@ -361,6 +594,8 @@ export function useChatRealtimeHandlers({
     onSessionInactive,
     onSessionProcessing,
     onSessionNotProcessing,
+    wasSessionMarkedProcessingRecently,
+    wasSessionMarkedNotProcessingRecently,
     onReplaceTemporarySession,
     onNavigateToSession,
     onWebSocketReconnect,

@@ -9,7 +9,9 @@
     "copied": "Nachricht kopiert",
     "selectFormat": "Kopierformat auswählen",
     "copyAsMarkdown": "Als Markdown kopieren",
-    "copyAsText": "Als Text kopieren"
+    "copyAsText": "Als Text kopieren",
+    "markdownShort": "MD",
+    "textShort": "TXT"
   },
   "messageTypes": {
     "user": "Benutzer:in",
@@ -226,12 +228,16 @@
       "restart": "Neu starten",
       "restartTitle": "Terminal neu starten (zuerst trennen)",
       "connect": "Im Terminal fortfahren",
-      "connectTitle": "Mit Terminal verbinden"
+      "connectTitle": "Mit Terminal verbinden",
+      "attach": "Terminal verbinden",
+      "attachTitle": "Mit dem vorhandenen Sitzungs-Terminal verbinden"
     },
     "loading": "Terminal wird geladen...",
     "connecting": "Verbindung zum Terminal wird hergestellt...",
+    "attaching": "Terminal wird verbunden...",
     "startSession": "Neue Claude-Sitzung starten",
     "resumeSession": "Sitzung fortsetzen: {{displayName}}...",
+    "attachSession": "Mit Terminal verbinden: {{displayName}}",
     "runCommand": "{{command}} in {{projectName}} ausführen",
     "startCli": "Claude CLI wird in {{projectName}} gestartet",
     "defaultCommand": "Befehl"

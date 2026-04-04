@@ -173,6 +173,7 @@ async function spawnGemini(command, options = {}, ws) {
             stdio: ['pipe', 'pipe', 'pipe'],
             env: { ...process.env } // Inherit all environment variables
         });
+        geminiProcess.writer = ws;
         let terminalNotificationSent = false;
         let terminalFailureReason = null;
 
@@ -445,9 +446,20 @@ function getActiveGeminiSessions() {
     return Array.from(activeGeminiProcesses.keys());
 }
 
+function reconnectGeminiSessionWriter(sessionId, newRawWs) {
+    const process = activeGeminiProcesses.get(sessionId);
+    if (!process?.writer?.updateWebSocket) {
+        return false;
+    }
+
+    process.writer.updateWebSocket(newRawWs);
+    return true;
+}
+
 export {
     spawnGemini,
     abortGeminiSession,
     isGeminiSessionActive,
-    getActiveGeminiSessions
+    getActiveGeminiSessions,
+    reconnectGeminiSessionWriter
 };

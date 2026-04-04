@@ -1,6 +1,7 @@
 import { Folder } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { MainContentStateViewProps } from '../../types/types';
+import MobileCreateProjectButton from './MobileCreateProjectButton';
 import MobileMenuButton from './MobileMenuButton';
 
 export default function MainContentStateView({ mode, isMobile, onMenuClick }: MainContentStateViewProps) {
@@ -12,12 +13,15 @@ export default function MainContentStateView({ mode, isMobile, onMenuClick }: Ma
     <div className="flex h-full flex-col">
       {isMobile && (
         <div className="pwa-header-safe flex-shrink-0 border-b border-border/50 bg-background/80 p-2 backdrop-blur-sm sm:p-3">
-          <MobileMenuButton onMenuClick={onMenuClick} compact />
+          <div className="flex items-center gap-1.5">
+            <MobileMenuButton onMenuClick={onMenuClick} compact />
+            <MobileCreateProjectButton onFallbackOpenMenu={onMenuClick} compact />
+          </div>
         </div>
       )}
 
       {isLoading ? (
-        <div className="flex flex-1 items-center justify-center">
+        <div className="flex flex-1 items-center justify-center" data-testid="main-content-loading">
           <div className="text-center text-muted-foreground">
             <div className="mx-auto mb-4 h-10 w-10">
               <div

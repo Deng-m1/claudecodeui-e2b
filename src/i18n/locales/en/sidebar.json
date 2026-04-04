@@ -15,6 +15,10 @@
     "codexSession": "Codex Session",
     "fetchingProjects": "Fetching your Claude projects and sessions",
     "projects": "projects",
+    "localSection": "Local",
+    "cloudSection": "Cloud",
+    "sessionCountLabel_one": "{{shown}} session",
+    "sessionCountLabel_other": "{{shown}} sessions",
     "noMatchingProjects": "No matching projects",
     "tryDifferentSearch": "Try adjusting your search term",
     "runClaudeCli": "Run Claude CLI in a project directory to get started"
@@ -32,7 +36,20 @@
     "loadingSessions": "Loading sessions...",
     "unnamed": "Unnamed",
     "loading": "Loading...",
-    "showMore": "Show more sessions"
+    "showMore": "Show more sessions",
+    "forkBadge": "Fork",
+    "forksBadge_one": "{{count}} fork",
+    "forksBadge_other": "{{count}} forks",
+    "forkedFromTooltip": "Forked from {{id}}",
+    "forksTooltip_one": "Has {{count}} fork",
+    "forksTooltip_other": "Has {{count}} forks",
+    "filters": {
+      "all": "All providers",
+      "claude": "Claude",
+      "cursor": "Cursor",
+      "codex": "Codex",
+      "gemini": "Gemini"
+    }
   },
   "tooltips": {
     "viewEnvironments": "View Environments",

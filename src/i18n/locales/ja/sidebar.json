@@ -15,6 +15,10 @@
     "codexSession": "Codexセッション",
     "fetchingProjects": "Claudeのプロジェクトとセッションを取得しています",
     "projects": "プロジェクト",
+    "localSection": "ローカル",
+    "cloudSection": "クラウド",
+    "sessionCountLabel_one": "{{shown}} 件のセッション",
+    "sessionCountLabel_other": "{{shown}} 件のセッション",
     "noMatchingProjects": "一致するプロジェクトがありません",
     "tryDifferentSearch": "検索語を変えてお試しください",
     "runClaudeCli": "プロジェクトディレクトリでClaude CLIを実行して始めましょう"

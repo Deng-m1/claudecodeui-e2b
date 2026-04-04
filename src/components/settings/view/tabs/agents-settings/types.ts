@@ -3,6 +3,7 @@ import type {
   AuthStatus,
   AgentCategory,
   ClaudePermissionsState,
+  CodexFeatureToggles,
   CursorPermissionsState,
   CodexPermissionMode,
   GeminiPermissionMode,
@@ -33,6 +34,8 @@ export type AgentsSettingsTabProps = {
   onCursorPermissionsChange: (value: CursorPermissionsState) => void;
   codexPermissionMode: CodexPermissionMode;
   onCodexPermissionModeChange: (value: CodexPermissionMode) => void;
+  codexFeatureToggles: CodexFeatureToggles;
+  onCodexFeatureTogglesChange: (value: CodexFeatureToggles) => void;
   geminiPermissionMode: GeminiPermissionMode;
   onGeminiPermissionModeChange: (value: GeminiPermissionMode) => void;
   mcpServers: McpServer[];
@@ -71,6 +74,8 @@ export type AgentCategoryContentSectionProps = {
   onCursorPermissionsChange: (value: CursorPermissionsState) => void;
   codexPermissionMode: CodexPermissionMode;
   onCodexPermissionModeChange: (value: CodexPermissionMode) => void;
+  codexFeatureToggles: CodexFeatureToggles;
+  onCodexFeatureTogglesChange: (value: CodexFeatureToggles) => void;
   geminiPermissionMode: GeminiPermissionMode;
   onGeminiPermissionModeChange: (value: GeminiPermissionMode) => void;
   mcpServers: McpServer[];

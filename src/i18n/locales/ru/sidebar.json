@@ -15,6 +15,12 @@
     "codexSession": "Сеанс Codex",
     "fetchingProjects": "Получение ваших проектов и сеансов Claude",
     "projects": "проекты",
+    "localSection": "Локальные",
+    "cloudSection": "Облако",
+    "sessionCountLabel_one": "{{shown}} сеанс",
+    "sessionCountLabel_few": "{{shown}} сеанса",
+    "sessionCountLabel_many": "{{shown}} сеансов",
+    "sessionCountLabel_other": "{{shown}} сеанса",
     "noMatchingProjects": "Нет подходящих проектов",
     "tryDifferentSearch": "Попробуйте изменить поисковый запрос",
     "runClaudeCli": "Запустите Claude CLI в каталоге проекта для начала работы"

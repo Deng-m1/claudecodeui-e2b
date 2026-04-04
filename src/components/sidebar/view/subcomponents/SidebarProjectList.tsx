@@ -1,11 +1,13 @@
 import { useEffect } from 'react';
 import type { TFunction } from 'i18next';
-import type { LoadingProgress, Project, ProjectSession, SessionProvider } from '../../../../types/app';
+import type { LoadingProgress, Project, ProjectSession, RuntimeMode, SessionProvider } from '../../../../types/app';
 import type {
   LoadingSessionsByProject,
   MCPServerStatus,
+  SidebarSessionProviderFilter,
   SessionWithProvider,
 } from '../../types/types';
+import { filterSessionsByProvider, isCloudProject } from '../../utils/utils';
 import SidebarProjectItem from './SidebarProjectItem';
 import SidebarProjectsState from './SidebarProjectsState';
 
@@ -22,6 +24,7 @@ export type SidebarProjectListProps = {
   loadingSessions: LoadingSessionsByProject;
   initialSessionsLoaded: Set<string>;
   currentTime: Date;
+  sessionProviderFilter: SidebarSessionProviderFilter;
   editingSession: string | null;
   editingSessionName: string;
   deletingProjects: Set<string>;
@@ -43,13 +46,20 @@ export type SidebarProjectListProps = {
     sessionId: string,
     sessionTitle: string,
     provider: SessionProvider,
+    runtime?: RuntimeMode,
   ) => void;
   onLoadMoreSessions: (project: Project) => void;
   onNewSession: (project: Project) => void;
   onEditingSessionNameChange: (value: string) => void;
   onStartEditingSession: (sessionId: string, initialName: string) => void;
   onCancelEditingSession: () => void;
-  onSaveEditingSession: (projectName: string, sessionId: string, summary: string, provider: SessionProvider) => void;
+  onSaveEditingSession: (
+    projectName: string,
+    sessionId: string,
+    summary: string,
+    provider: SessionProvider,
+    runtime: RuntimeMode,
+  ) => void;
   t: TFunction;
 };
 
@@ -66,6 +76,7 @@ export default function SidebarProjectList({
   loadingSessions,
   initialSessionsLoaded,
   currentTime,
+  sessionProviderFilter,
   editingSession,
   editingSessionName,
   deletingProjects,
@@ -111,12 +122,31 @@ export default function SidebarProjectList({
   }, [selectedProject]);
 
   const showProjects = !isLoading && projects.length > 0 && filteredProjects.length > 0;
+  const localProjects = filteredProjects.filter((project) => !isCloudProject(project));
+  const cloudProjects = filteredProjects.filter((project) => isCloudProject(project));
 
-  return (
-    <div className="pb-safe-area-inset-bottom md:space-y-1">
-      {!showProjects
-        ? state
-        : filteredProjects.map((project) => (
+  const renderProjectSection = (sectionProjects: Project[], title: string, testId: string) => {
+    if (sectionProjects.length === 0) {
+      return null;
+    }
+
+    return (
+      <section key={testId} data-testid={testId} className="space-y-1">
+        <div className="px-3 pb-1 pt-2">
+          <div className="flex items-center justify-between">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/80">
+              {title}
+            </h3>
+            <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+              {sectionProjects.length}
+            </span>
+          </div>
+        </div>
+
+        {sectionProjects.map((project) => {
+          const projectSessions = filterSessionsByProvider(getProjectSessions(project), sessionProviderFilter);
+
+          return (
             <SidebarProjectItem
               key={project.name}
               project={project}
@@ -127,10 +157,11 @@ export default function SidebarProjectList({
               isStarred={isProjectStarred(project.name)}
               editingProject={editingProject}
               editingName={editingName}
-              sessions={getProjectSessions(project)}
+              sessions={projectSessions}
               initialSessionsLoaded={initialSessionsLoaded.has(project.name)}
               isLoadingSessions={Boolean(loadingSessions[project.name])}
               currentTime={currentTime}
+              sessionProviderFilter={sessionProviderFilter}
               editingSession={editingSession}
               editingSessionName={editingSessionName}
               tasksEnabled={tasksEnabled}
@@ -153,7 +184,30 @@ export default function SidebarProjectList({
               onSaveEditingSession={onSaveEditingSession}
               t={t}
             />
-          ))}
+          );
+        })}
+      </section>
+    );
+  };
+
+  return (
+    <div className="pb-safe-area-inset-bottom md:space-y-1" data-testid="sidebar-project-list">
+      {!showProjects
+        ? state
+        : (
+            <>
+              {renderProjectSection(
+                localProjects,
+                t('projects.localSection', { defaultValue: 'Local' }),
+                'sidebar-project-section-local',
+              )}
+              {renderProjectSection(
+                cloudProjects,
+                t('projects.cloudSection', { defaultValue: 'Cloud' }),
+                'sidebar-project-section-cloud',
+              )}
+            </>
+          )}
     </div>
   );
 }

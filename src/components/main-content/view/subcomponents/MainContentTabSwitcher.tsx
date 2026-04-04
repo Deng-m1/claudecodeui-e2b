@@ -2,13 +2,16 @@ import { MessageSquare, Terminal, Folder, GitBranch, ClipboardCheck, type Lucide
 import type { Dispatch, SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Tooltip, PillBar, Pill } from '../../../../shared/view/ui';
-import type { AppTab } from '../../../../types/app';
+import type { AppTab, Project, ProjectSession } from '../../../../types/app';
 import { usePlugins } from '../../../../contexts/PluginsContext';
+import { getProjectCapabilities } from '../../../../utils/projectCapabilities';
 import PluginIcon from '../../../plugins/view/PluginIcon';
 
 type MainContentTabSwitcherProps = {
   activeTab: AppTab;
   setActiveTab: Dispatch<SetStateAction<AppTab>>;
+  selectedProject: Project;
+  selectedSession: ProjectSession | null;
   shouldShowTasksTab: boolean;
 };
 
@@ -46,12 +49,21 @@ const TASKS_TAB: BuiltInTab = {
 export default function MainContentTabSwitcher({
   activeTab,
   setActiveTab,
+  selectedProject,
+  selectedSession,
   shouldShowTasksTab,
 }: MainContentTabSwitcherProps) {
   const { t } = useTranslation();
   const { plugins } = usePlugins();
+  const capabilities = getProjectCapabilities(selectedProject);
 
-  const builtInTabs: BuiltInTab[] = shouldShowTasksTab ? [...BASE_TABS, TASKS_TAB] : BASE_TABS;
+  const builtInTabs: BuiltInTab[] = [
+    BASE_TABS[0],
+    ...(capabilities.shell ? [BASE_TABS[1]] : []),
+    ...(capabilities.files ? [BASE_TABS[2]] : []),
+    ...(capabilities.git ? [BASE_TABS[3]] : []),
+    ...(shouldShowTasksTab ? [TASKS_TAB] : []),
+  ];
 
   const pluginTabs: PluginTab[] = plugins
     .filter((p) => p.enabled)

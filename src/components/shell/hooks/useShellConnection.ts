@@ -9,6 +9,7 @@ import { getShellWebSocketUrl, parseShellMessage, sendSocketMessage } from '../u
 const ANSI_ESCAPE_REGEX =
   /(?:\u001B\[[0-?]*[ -/]*[@-~]|\u009B[0-?]*[ -/]*[@-~]|\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)|\u009D[^\u0007\u009C]*(?:\u0007|\u009C)|\u001B[PX^_][^\u001B]*\u001B\\|[\u0090\u0098\u009E\u009F][^\u009C]*\u009C|\u001B[@-Z\\-_])/g;
 const PROCESS_EXIT_REGEX = /Process exited with code (\d+)/;
+const SHELL_BACKGROUND_RECONNECT_THRESHOLD_MS = 5_000;
 
 type UseShellConnectionOptions = {
   wsRef: MutableRefObject<WebSocket | null>;
@@ -18,6 +19,7 @@ type UseShellConnectionOptions = {
   selectedSessionRef: MutableRefObject<ProjectSession | null | undefined>;
   initialCommandRef: MutableRefObject<string | null | undefined>;
   isPlainShellRef: MutableRefObject<boolean>;
+  isActiveRef: MutableRefObject<boolean>;
   onProcessCompleteRef: MutableRefObject<((exitCode: number) => void) | null | undefined>;
   isInitialized: boolean;
   autoConnect: boolean;
@@ -43,6 +45,7 @@ export function useShellConnection({
   selectedSessionRef,
   initialCommandRef,
   isPlainShellRef,
+  isActiveRef,
   onProcessCompleteRef,
   isInitialized,
   autoConnect,
@@ -54,6 +57,7 @@ export function useShellConnection({
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const connectingRef = useRef(false);
+  const lastHiddenAtRef = useRef<number | null>(null);
 
   const handleProcessCompletion = useCallback(
     (output: string) => {
@@ -114,7 +118,15 @@ export function useShellConnection({
       }
 
       try {
-        const wsUrl = getShellWebSocketUrl();
+        const currentProject = selectedProjectRef.current;
+        const currentSession = selectedSessionRef.current;
+        const projectUsesE2B =
+          currentProject?.runtime === 'e2b' ||
+          Boolean(currentProject?.cloud?.sandboxId) ||
+          String(currentProject?.name || '').startsWith('e2b__');
+        const useTerminaldTransport =
+          !isPlainShellRef.current && (!currentSession || currentSession.__runtime === 'e2b' || projectUsesE2B);
+        const wsUrl = getShellWebSocketUrl({ projectTerminal: useTerminaldTransport });
         if (!wsUrl) {
           connectingRef.current = false;
           setIsConnecting(false);
@@ -142,12 +154,22 @@ export function useShellConnection({
 
             currentFitAddon.fit();
 
+            const terminalKey =
+              !isPlainShellRef.current &&
+              currentSession?.id &&
+              (currentSession.__runtime === 'e2b' || projectUsesE2B)
+                ? `session:${currentSession.id}`
+                : null;
+
             sendSocketMessage(socket, {
               type: 'init',
+              projectName: currentProject.name,
               projectPath: currentProject.fullPath || currentProject.path || '',
-              sessionId: isPlainShellRef.current ? null : selectedSessionRef.current?.id || null,
-              hasSession: isPlainShellRef.current ? false : Boolean(selectedSessionRef.current),
-              provider: isPlainShellRef.current ? 'plain-shell' : (selectedSessionRef.current?.__provider || localStorage.getItem('selected-provider') || 'claude'),
+              projectRuntime: currentProject.runtime || 'local',
+              sessionId: isPlainShellRef.current ? null : currentSession?.id || null,
+              hasSession: isPlainShellRef.current ? false : Boolean(currentSession),
+              provider: isPlainShellRef.current ? 'plain-shell' : (currentSession?.__provider || localStorage.getItem('selected-provider') || 'claude'),
+              terminalKey,
               cols: currentTerminal.cols,
               rows: currentTerminal.rows,
               initialCommand: initialCommandRef.current,
@@ -213,6 +235,99 @@ export function useShellConnection({
     connectingRef.current = false;
     setAuthUrl('');
   }, [clearTerminalScreen, closeSocket, setAuthUrl]);
+
+  const reconnectShell = useCallback((reason: string, force = false) => {
+    if (!isInitialized) {
+      return;
+    }
+
+    const socket = wsRef.current;
+    const readyState = socket?.readyState;
+    const shouldMaintainConnection = autoConnect || isConnected || isConnecting || Boolean(socket);
+
+    if (!shouldMaintainConnection) {
+      return;
+    }
+
+    if (!force && readyState !== undefined && (readyState === WebSocket.OPEN || readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
+    if (socket) {
+      wsRef.current = null;
+      if (socket.readyState < WebSocket.CLOSING) {
+        try {
+          socket.close(4000, reason);
+        } catch {
+          socket.close();
+        }
+      }
+    }
+
+    clearTerminalScreen();
+    setIsConnected(false);
+    setIsConnecting(true);
+    connectingRef.current = true;
+    setAuthUrl('');
+    connectWebSocket(true);
+  }, [autoConnect, clearTerminalScreen, connectWebSocket, isConnected, isConnecting, isInitialized, setAuthUrl, wsRef]);
+
+  useEffect(() => {
+    const resumeConnection = (source: string, force = false) => {
+      if (!isActiveRef.current) {
+        return;
+      }
+
+      const hiddenAt = lastHiddenAtRef.current;
+      const hiddenDuration = hiddenAt === null ? 0 : Date.now() - hiddenAt;
+      const shouldForceReconnect = force || hiddenDuration >= SHELL_BACKGROUND_RECONNECT_THRESHOLD_MS;
+      lastHiddenAtRef.current = null;
+
+      if (shouldForceReconnect) {
+        reconnectShell(`${source}-resume`, true);
+        return;
+      }
+
+      reconnectShell(`${source}-resume`);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        lastHiddenAtRef.current = Date.now();
+        return;
+      }
+
+      resumeConnection('visibilitychange');
+    };
+
+    const handlePageShow = (event: PageTransitionEvent) => {
+      resumeConnection('pageshow', Boolean(event.persisted));
+    };
+
+    const handleFocus = () => {
+      if (document.visibilityState === 'hidden') {
+        return;
+      }
+
+      resumeConnection('focus');
+    };
+
+    const handleOnline = () => {
+      resumeConnection('online');
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pageshow', handlePageShow);
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('online', handleOnline);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pageshow', handlePageShow);
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('online', handleOnline);
+    };
+  }, [isActiveRef, reconnectShell]);
 
   useEffect(() => {
     if (!autoConnect || !isInitialized || isConnecting || isConnected) {

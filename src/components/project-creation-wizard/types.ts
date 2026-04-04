@@ -25,6 +25,7 @@ export type BrowseFilesystemResponse = {
   path?: string;
   suggestions?: FolderSuggestion[];
   error?: string;
+  details?: string;
 };
 
 export type CreateFolderResponse = {

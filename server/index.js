@@ -44,11 +44,11 @@ import pty from 'node-pty';
 import fetch from 'node-fetch';
 import mime from 'mime-types';
 
-import { getProjects, getSessions, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache, searchConversations } from './projects.js';
+import { getProjects, getProjectSessionsPage, getSessions, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache, searchConversations } from './projects.js';
 import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getActiveClaudeSDKSessions, resolveToolApproval, getPendingApprovalsForSession, reconnectSessionWriter } from './claude-sdk.js';
-import { spawnCursor, abortCursorSession, isCursorSessionActive, getActiveCursorSessions } from './cursor-cli.js';
-import { queryCodex, abortCodexSession, isCodexSessionActive, getActiveCodexSessions } from './openai-codex.js';
-import { spawnGemini, abortGeminiSession, isGeminiSessionActive, getActiveGeminiSessions } from './gemini-cli.js';
+import { spawnCursor, abortCursorSession, isCursorSessionActive, getActiveCursorSessions, reconnectCursorSessionWriter } from './cursor-cli.js';
+import { queryCodex, abortCodexSession, isCodexSessionActive, getActiveCodexSessions, reconnectCodexSessionWriter } from './openai-codex.js';
+import { spawnGemini, abortGeminiSession, isGeminiSessionActive, getActiveGeminiSessions, reconnectGeminiSessionWriter } from './gemini-cli.js';
 import sessionManager from './sessionManager.js';
 import gitRoutes from './routes/git.js';
 import authRoutes from './routes/auth.js';
@@ -68,17 +68,54 @@ import pluginsRoutes from './routes/plugins.js';
 import messagesRoutes from './routes/messages.js';
 import e2bRoutes from './routes/e2b.js';
 import githubRoutes from './routes/github.js';
-import { isE2BEnabled } from './providers/e2b/sandbox-manager.js';
-import { createE2BSession, sendMessageToE2BSession, respondE2BPermission, abortE2BSession, isE2BSessionActive, getActiveE2BSessions } from './providers/e2b/session-bridge.js';
+import authCenterRoutes from './routes/auth-center.js';
+import { destroySandbox, getSandboxId, isE2BEnabled } from './providers/e2b/sandbox-manager.js';
+import { createE2BSession, sendMessageToE2BSession, respondE2BPermission, abortE2BSession, isE2BSessionActive, getActiveE2BSessions, reconnectE2BSessionWriter, syncClaudeSettingsToSandbox } from './providers/e2b/session-bridge.js';
+import { resolveSandboxConnectHostFromRequest } from './providers/e2b/connect-host.js';
+import { writeClaudePermissionSettingsToHost } from './providers/e2b/auth-sync.js';
 import { createNormalizedMessage } from './providers/types.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
-import { initializeDatabase, sessionNamesDb, applyCustomSessionNames } from './database/db.js';
+import { handleWebTerminalFallbackConnection } from './utils/web-terminal-fallback.js';
+import { initializeDatabase, sessionNamesDb, applyCustomSessionNames, e2bSandboxDb, e2bSessionDb, e2bSessionMessagesDb, userClaudeSettingsDb } from './database/db.js';
 import { configureWebPush } from './services/vapid-keys.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
 import { IS_PLATFORM } from './constants/config.js';
 import { getConnectableHost } from '../shared/networkHosts.js';
+import { extractSandboxIdFromProjectName, isE2BProjectName, resolveE2BAgentProvider } from './providers/e2b/project-utils.js';
+import { WebSocketWriter } from './lib/session-writer.js';
+import { getProjectRuntimeAdapter } from './services/project-runtime/index.js';
+import { installProcessErrorGuards } from './lib/process-error-guards.js';
+
+installProcessErrorGuards();
+
+process.on('uncaughtExceptionMonitor', (error, origin) => {
+    console.error('[FATAL] Uncaught exception monitor:', origin, error);
+});
+
+process.on('exit', (code) => {
+    console.log(`[INFO] Process exiting with code ${code}`);
+});
 
 const VALID_PROVIDERS = ['claude', 'codex', 'cursor', 'gemini', 'e2b'];
+const PREFER_GLOBAL_AGENT_CLI = process.env.CLAUDE_CODE_UI_PREFER_GLOBAL_AGENT_CLI !== 'false';
+
+function buildAgentCliPath(basePath = process.env.PATH || '') {
+    if (!PREFER_GLOBAL_AGENT_CLI) {
+        return basePath;
+    }
+
+    return String(basePath || '')
+        .split(path.delimiter)
+        .filter(Boolean)
+        .filter((entry) => {
+            try {
+                return !path.resolve(entry).endsWith(path.join('node_modules', '.bin'));
+            } catch {
+                return true;
+            }
+        })
+        .join(path.delimiter);
+}
 
 // File system watchers for provider project/session folders
 const PROVIDER_WATCH_PATHS = [
@@ -97,9 +134,10 @@ const WATCHER_IGNORED_PATTERNS = [
     '**/*.swp',
     '**/.DS_Store'
 ];
-const WATCHER_DEBOUNCE_MS = 300;
+const WATCHER_DEBOUNCE_MS = 1500;
 let projectsWatchers = [];
 let projectsWatcherDebounceTimer = null;
+let projectsWatcherPendingChange = null;
 const connectedClients = new Set();
 let isGetProjectsRunning = false; // Flag to prevent reentrant calls
 
@@ -114,6 +152,55 @@ function broadcastProgress(progress) {
             client.send(message);
         }
     });
+}
+
+function getConnectedClientsByUser() {
+    const clientsByUser = new Map();
+
+    connectedClients.forEach((client) => {
+        if (client.readyState !== WebSocket.OPEN) {
+            return;
+        }
+
+        const userId = client.userId ?? null;
+        const userKey = userId === null ? '__anonymous__' : String(userId);
+        const currentClients = clientsByUser.get(userKey) || { userId, clients: [] };
+        currentClients.clients.push(client);
+        clientsByUser.set(userKey, currentClients);
+    });
+
+    return Array.from(clientsByUser.values());
+}
+
+async function rememberClaudeToolPermission(userId, entry, options = {}) {
+    if (!userId || typeof entry !== 'string' || !entry.trim()) {
+        return null;
+    }
+
+    const trimmedEntry = entry.trim();
+    const current = userClaudeSettingsDb.getSettings(userId);
+    const next = userClaudeSettingsDb.updateSettings(userId, {
+        ...current,
+        allowedTools: [...current.allowedTools, trimmedEntry],
+        disallowedTools: current.disallowedTools.filter((tool) => tool !== trimmedEntry),
+    });
+
+    try {
+        await writeClaudePermissionSettingsToHost(next);
+    } catch (error) {
+        console.error('[Claude Settings] Failed to write host permission settings:', error);
+    }
+
+    if (options.sandboxId) {
+        const syncResult = await syncClaudeSettingsToSandbox(options.sandboxId, {
+            sandboxConnectHost: options.sandboxConnectHost || '',
+        });
+        if (!syncResult?.synced) {
+            console.warn('[Claude Settings] Failed to sync sandbox permission settings:', syncResult?.error || syncResult?.reason || 'unknown_error');
+        }
+    }
+
+    return next;
 }
 
 // Setup file system watchers for Claude, Cursor, and Codex project/session folders
@@ -137,45 +224,76 @@ async function setupProjectsWatcher() {
     projectsWatchers = [];
 
     const debouncedUpdate = (eventType, filePath, provider, rootPath) => {
+        projectsWatcherPendingChange = {
+            eventType,
+            filePath,
+            provider,
+            rootPath,
+        };
+
         if (projectsWatcherDebounceTimer) {
-            clearTimeout(projectsWatcherDebounceTimer);
+            return;
         }
 
         projectsWatcherDebounceTimer = setTimeout(async () => {
-            // Prevent reentrant calls
+            const pendingChange = projectsWatcherPendingChange;
+            projectsWatcherPendingChange = null;
+            projectsWatcherDebounceTimer = null;
+
+            if (!pendingChange) {
+                return;
+            }
+
             if (isGetProjectsRunning) {
+                debouncedUpdate(
+                    pendingChange.eventType,
+                    pendingChange.filePath,
+                    pendingChange.provider,
+                    pendingChange.rootPath,
+                );
+                return;
+            }
+
+            const connectedUsers = getConnectedClientsByUser();
+            if (connectedUsers.length === 0) {
                 return;
             }
 
             try {
                 isGetProjectsRunning = true;
-
-                // Clear project directory cache when files change
                 clearProjectDirectoryCache();
 
-                // Get updated projects list
-                const updatedProjects = await getProjects(broadcastProgress);
+                await Promise.all(
+                    connectedUsers.map(async ({ userId, clients }) => {
+                        const updatedProjects = await getProjects(null, userId ? { userId } : {});
+                        const updateMessage = JSON.stringify({
+                            type: 'projects_updated',
+                            projects: updatedProjects,
+                            timestamp: new Date().toISOString(),
+                            changeType: pendingChange.eventType,
+                            changedFile: path.relative(pendingChange.rootPath, pendingChange.filePath),
+                            watchProvider: pendingChange.provider
+                        });
 
-                // Notify all connected clients about the project changes
-                const updateMessage = JSON.stringify({
-                    type: 'projects_updated',
-                    projects: updatedProjects,
-                    timestamp: new Date().toISOString(),
-                    changeType: eventType,
-                    changedFile: path.relative(rootPath, filePath),
-                    watchProvider: provider
-                });
-
-                connectedClients.forEach(client => {
-                    if (client.readyState === WebSocket.OPEN) {
-                        client.send(updateMessage);
-                    }
-                });
-
+                        clients.forEach((client) => {
+                            if (client.readyState === WebSocket.OPEN) {
+                                client.send(updateMessage);
+                            }
+                        });
+                    })
+                );
             } catch (error) {
                 console.error('[ERROR] Error handling project changes:', error);
             } finally {
                 isGetProjectsRunning = false;
+                if (projectsWatcherPendingChange) {
+                    debouncedUpdate(
+                        projectsWatcherPendingChange.eventType,
+                        projectsWatcherPendingChange.filePath,
+                        projectsWatcherPendingChange.provider,
+                        projectsWatcherPendingChange.rootPath,
+                    );
+                }
             }
         }, WATCHER_DEBOUNCE_MS);
     };
@@ -407,6 +525,7 @@ app.use('/api/sessions', authenticateToken, messagesRoutes);
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
+app.use('/api/auth-center', authenticateToken, authCenterRoutes);
 app.use('/api/e2b', authenticateToken, e2bRoutes);
 
 // GitHub routes: OAuth authorize/callback are public, rest require auth
@@ -509,7 +628,7 @@ app.post('/api/system/update', authenticateToken, async (req, res) => {
 
 app.get('/api/projects', authenticateToken, async (req, res) => {
     try {
-        const projects = await getProjects(broadcastProgress);
+        const projects = await getProjects(broadcastProgress, { userId: req.user.id });
         res.json(projects);
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -518,9 +637,14 @@ app.get('/api/projects', authenticateToken, async (req, res) => {
 
 app.get('/api/projects/:projectName/sessions', authenticateToken, async (req, res) => {
     try {
-        const { limit = 5, offset = 0 } = req.query;
-        const result = await getSessions(req.params.projectName, parseInt(limit), parseInt(offset));
-        applyCustomSessionNames(result.sessions, 'claude');
+        const { limit = String(5), offset = String(0), provider = 'claude', projectPath = '' } = req.query;
+        const result = await getProjectSessionsPage({
+            projectName: req.params.projectName,
+            projectPath: typeof projectPath === 'string' ? projectPath : '',
+            provider: typeof provider === 'string' ? provider : 'claude',
+            limit: parseInt(limit, 10),
+            offset: parseInt(offset, 10),
+        });
         res.json(result);
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -543,6 +667,15 @@ app.delete('/api/projects/:projectName/sessions/:sessionId', authenticateToken, 
     try {
         const { projectName, sessionId } = req.params;
         console.log(`[API] Deleting session: ${sessionId} from project: ${projectName}`);
+
+        if (isE2BProjectName(projectName)) {
+            await abortE2BSession(sessionId);
+            e2bSessionMessagesDb.deleteBySessionId(sessionId);
+            e2bSessionDb.delete(sessionId);
+            sessionNamesDb.deleteName(sessionId, 'e2b');
+            return res.json({ success: true });
+        }
+
         await deleteSession(projectName, sessionId);
         sessionNamesDb.deleteName(sessionId, 'claude');
         console.log(`[API] Session ${sessionId} deleted successfully`);
@@ -585,6 +718,16 @@ app.delete('/api/projects/:projectName', authenticateToken, async (req, res) => 
         const { projectName } = req.params;
         const force = req.query.force === 'true';
         await deleteProject(projectName, force);
+
+        if (isE2BProjectName(projectName)) {
+            const sandboxId = extractSandboxIdFromProjectName(projectName);
+            if (sandboxId && getSandboxId() === sandboxId) {
+                await destroySandbox();
+            } else if (sandboxId) {
+                e2bSandboxDb.updateStatus(sandboxId, 'destroyed');
+            }
+        }
+
         res.json({ success: true });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -667,13 +810,14 @@ const expandWorkspacePath = (inputPath) => {
 // Browse filesystem endpoint for project suggestions - uses existing getFileTree
 app.get('/api/browse-filesystem', authenticateToken, async (req, res) => {
     try {
-        const { path: dirPath } = req.query;
+        const { path: dirPath, showHidden } = req.query;
 
         console.log('[API] Browse filesystem request for path:', dirPath);
         console.log('[API] WORKSPACES_ROOT is:', WORKSPACES_ROOT);
         // Default to home directory if no path provided
         const defaultRoot = WORKSPACES_ROOT;
         let targetPath = dirPath ? expandWorkspacePath(dirPath) : defaultRoot;
+        const shouldShowHidden = showHidden === 'true' || showHidden === '1';
 
         // Resolve and normalize the path
         targetPath = path.resolve(targetPath);
@@ -698,7 +842,7 @@ app.get('/api/browse-filesystem', authenticateToken, async (req, res) => {
         }
 
         // Use existing getFileTree function with shallow depth (only direct children)
-        const fileTree = await getFileTree(resolvedPath, 1, 0, false); // maxDepth=1, showHidden=false
+        const fileTree = await getFileTree(resolvedPath, 1, 0, shouldShowHidden);
 
         // Filter only directories and format for suggestions
         const directories = fileTree
@@ -791,37 +935,16 @@ app.get('/api/projects/:projectName/file', authenticateToken, async (req, res) =
         const { projectName } = req.params;
         const { filePath } = req.query;
 
-
-        // Security: ensure the requested path is inside the project root
         if (!filePath) {
             return res.status(400).json({ error: 'Invalid file path' });
         }
 
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
-        if (!projectRoot) {
-            return res.status(404).json({ error: 'Project not found' });
-        }
-
-        // Handle both absolute and relative paths
-        const resolved = path.isAbsolute(filePath)
-            ? path.resolve(filePath)
-            : path.resolve(projectRoot, filePath);
-        const normalizedRoot = path.resolve(projectRoot) + path.sep;
-        if (!resolved.startsWith(normalizedRoot)) {
-            return res.status(403).json({ error: 'Path must be under project root' });
-        }
-
-        const content = await fsPromises.readFile(resolved, 'utf8');
-        res.json({ content, path: resolved });
+        const adapter = await getProjectRuntimeAdapter(projectName, { userId: req.user?.id || null });
+        const file = await adapter.files.readText(String(filePath));
+        res.json(file);
     } catch (error) {
         console.error('Error reading file:', error);
-        if (error.code === 'ENOENT') {
-            res.status(404).json({ error: 'File not found' });
-        } else if (error.code === 'EACCES') {
-            res.status(403).json({ error: 'Permission denied' });
-        } else {
-            res.status(500).json({ error: error.message });
-        }
+        res.status(getFileOperationStatusCode(error)).json({ error: error.message });
     }
 });
 
@@ -831,49 +954,19 @@ app.get('/api/projects/:projectName/files/content', authenticateToken, async (re
         const { projectName } = req.params;
         const { path: filePath } = req.query;
 
-
-        // Security: ensure the requested path is inside the project root
         if (!filePath) {
             return res.status(400).json({ error: 'Invalid file path' });
         }
 
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
-        if (!projectRoot) {
-            return res.status(404).json({ error: 'Project not found' });
-        }
-
-        const resolved = path.resolve(filePath);
-        const normalizedRoot = path.resolve(projectRoot) + path.sep;
-        if (!resolved.startsWith(normalizedRoot)) {
-            return res.status(403).json({ error: 'Path must be under project root' });
-        }
-
-        // Check if file exists
-        try {
-            await fsPromises.access(resolved);
-        } catch (error) {
-            return res.status(404).json({ error: 'File not found' });
-        }
-
-        // Get file extension and set appropriate content type
-        const mimeType = mime.lookup(resolved) || 'application/octet-stream';
+        const adapter = await getProjectRuntimeAdapter(projectName, { userId: req.user?.id || null });
+        const file = await adapter.files.readBinary(String(filePath));
+        const mimeType = mime.lookup(file.path) || 'application/octet-stream';
         res.setHeader('Content-Type', mimeType);
-
-        // Stream the file
-        const fileStream = fs.createReadStream(resolved);
-        fileStream.pipe(res);
-
-        fileStream.on('error', (error) => {
-            console.error('Error streaming file:', error);
-            if (!res.headersSent) {
-                res.status(500).json({ error: 'Error reading file' });
-            }
-        });
-
+        res.send(file.content);
     } catch (error) {
         console.error('Error serving binary file:', error);
         if (!res.headersSent) {
-            res.status(500).json({ error: error.message });
+            res.status(getFileOperationStatusCode(error)).json({ error: error.message });
         }
     }
 });
@@ -884,8 +977,6 @@ app.put('/api/projects/:projectName/file', authenticateToken, async (req, res) =
         const { projectName } = req.params;
         const { filePath, content } = req.body;
 
-
-        // Security: ensure the requested path is inside the project root
         if (!filePath) {
             return res.status(400).json({ error: 'Invalid file path' });
         }
@@ -894,116 +985,32 @@ app.put('/api/projects/:projectName/file', authenticateToken, async (req, res) =
             return res.status(400).json({ error: 'Content is required' });
         }
 
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
-        if (!projectRoot) {
-            return res.status(404).json({ error: 'Project not found' });
-        }
-
-        // Handle both absolute and relative paths
-        const resolved = path.isAbsolute(filePath)
-            ? path.resolve(filePath)
-            : path.resolve(projectRoot, filePath);
-        const normalizedRoot = path.resolve(projectRoot) + path.sep;
-        if (!resolved.startsWith(normalizedRoot)) {
-            return res.status(403).json({ error: 'Path must be under project root' });
-        }
-
-        // Write the new content
-        await fsPromises.writeFile(resolved, content, 'utf8');
+        const adapter = await getProjectRuntimeAdapter(projectName, { userId: req.user?.id || null });
+        const result = await adapter.files.writeText(String(filePath), content);
 
         res.json({
             success: true,
-            path: resolved,
+            path: result.path,
             message: 'File saved successfully'
         });
     } catch (error) {
         console.error('Error saving file:', error);
-        if (error.code === 'ENOENT') {
-            res.status(404).json({ error: 'File or directory not found' });
-        } else if (error.code === 'EACCES') {
-            res.status(403).json({ error: 'Permission denied' });
-        } else {
-            res.status(500).json({ error: error.message });
-        }
+        res.status(getFileOperationStatusCode(error)).json({ error: error.message });
     }
 });
 
+// Get project files endpoint
 app.get('/api/projects/:projectName/files', authenticateToken, async (req, res) => {
     try {
-
-        // Using fsPromises from import
-
-        // Use extractProjectDirectory to get the actual project path
-        let actualPath;
-        try {
-            actualPath = await extractProjectDirectory(req.params.projectName);
-        } catch (error) {
-            console.error('Error extracting project directory:', error);
-            // Fallback to simple dash replacement
-            actualPath = req.params.projectName.replace(/-/g, '/');
-        }
-
-        // Check if path exists
-        try {
-            await fsPromises.access(actualPath);
-        } catch (e) {
-            return res.status(404).json({ error: `Project path not found: ${actualPath}` });
-        }
-
-        const files = await getFileTree(actualPath, 10, 0, true);
+        const { projectName } = req.params;
+        const adapter = await getProjectRuntimeAdapter(projectName, { userId: req.user?.id || null });
+        const files = await adapter.files.getTree();
         res.json(files);
     } catch (error) {
-        console.error('[ERROR] File tree error:', error.message);
-        res.status(500).json({ error: error.message });
+        console.error('Error getting files:', error);
+        res.status(getFileOperationStatusCode(error)).json({ error: error.message });
     }
 });
-
-// ============================================================================
-// FILE OPERATIONS API ENDPOINTS
-// ============================================================================
-
-/**
- * Validate that a path is within the project root
- * @param {string} projectRoot - The project root path
- * @param {string} targetPath - The path to validate
- * @returns {{ valid: boolean, resolved?: string, error?: string }}
- */
-function validatePathInProject(projectRoot, targetPath) {
-    const resolved = path.isAbsolute(targetPath)
-        ? path.resolve(targetPath)
-        : path.resolve(projectRoot, targetPath);
-    const normalizedRoot = path.resolve(projectRoot) + path.sep;
-    if (!resolved.startsWith(normalizedRoot)) {
-        return { valid: false, error: 'Path must be under project root' };
-    }
-    return { valid: true, resolved };
-}
-
-/**
- * Validate filename - check for invalid characters
- * @param {string} name - The filename to validate
- * @returns {{ valid: boolean, error?: string }}
- */
-function validateFilename(name) {
-    if (!name || !name.trim()) {
-        return { valid: false, error: 'Filename cannot be empty' };
-    }
-    // Check for invalid characters (Windows + Unix)
-    const invalidChars = /[<>:"/\\|?*\x00-\x1f]/;
-    if (invalidChars.test(name)) {
-        return { valid: false, error: 'Filename contains invalid characters' };
-    }
-    // Check for reserved names (Windows)
-    const reserved = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i;
-    if (reserved.test(name)) {
-        return { valid: false, error: 'Filename is a reserved name' };
-    }
-    // Check for dots only
-    if (/^\.+$/.test(name)) {
-        return { valid: false, error: 'Filename cannot be only dots' };
-    }
-    return { valid: true };
-}
 
 // POST /api/projects/:projectName/files/create - Create new file or directory
 app.post('/api/projects/:projectName/files/create', authenticateToken, async (req, res) => {
@@ -1011,7 +1018,6 @@ app.post('/api/projects/:projectName/files/create', authenticateToken, async (re
         const { projectName } = req.params;
         const { path: parentPath, type, name } = req.body;
 
-        // Validate input
         if (!name || !type) {
             return res.status(400).json({ error: 'Name and type are required' });
         }
@@ -1025,60 +1031,19 @@ app.post('/api/projects/:projectName/files/create', authenticateToken, async (re
             return res.status(400).json({ error: nameValidation.error });
         }
 
-        // Get project root
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
-        if (!projectRoot) {
-            return res.status(404).json({ error: 'Project not found' });
-        }
-
-        // Build and validate target path
-        const targetDir = parentPath || '';
-        const targetPath = targetDir ? path.join(targetDir, name) : name;
-        const validation = validatePathInProject(projectRoot, targetPath);
-        if (!validation.valid) {
-            return res.status(403).json({ error: validation.error });
-        }
-
-        const resolvedPath = validation.resolved;
-
-        // Check if already exists
-        try {
-            await fsPromises.access(resolvedPath);
-            return res.status(409).json({ error: `${type === 'file' ? 'File' : 'Directory'} already exists` });
-        } catch {
-            // Doesn't exist, which is what we want
-        }
-
-        // Create file or directory
-        if (type === 'directory') {
-            await fsPromises.mkdir(resolvedPath, { recursive: false });
-        } else {
-            // Ensure parent directory exists
-            const parentDir = path.dirname(resolvedPath);
-            try {
-                await fsPromises.access(parentDir);
-            } catch {
-                await fsPromises.mkdir(parentDir, { recursive: true });
-            }
-            await fsPromises.writeFile(resolvedPath, '', 'utf8');
-        }
+        const adapter = await getProjectRuntimeAdapter(projectName, { userId: req.user?.id || null });
+        const created = await adapter.files.createEntry(parentPath || '', type, name);
 
         res.json({
             success: true,
-            path: resolvedPath,
+            path: created.path,
             name,
             type,
-            message: `${type === 'file' ? 'File' : 'Directory'} created successfully`
+            message: (type === 'file' ? 'File' : 'Directory') + ' created successfully'
         });
     } catch (error) {
         console.error('Error creating file/directory:', error);
-        if (error.code === 'EACCES') {
-            res.status(403).json({ error: 'Permission denied' });
-        } else if (error.code === 'ENOENT') {
-            res.status(404).json({ error: 'Parent directory not found' });
-        } else {
-            res.status(500).json({ error: error.message });
-        }
+        res.status(getFileOperationStatusCode(error)).json({ error: error.message });
     }
 });
 
@@ -1088,7 +1053,6 @@ app.put('/api/projects/:projectName/files/rename', authenticateToken, async (req
         const { projectName } = req.params;
         const { oldPath, newName } = req.body;
 
-        // Validate input
         if (!oldPath || !newName) {
             return res.status(400).json({ error: 'oldPath and newName are required' });
         }
@@ -1098,64 +1062,19 @@ app.put('/api/projects/:projectName/files/rename', authenticateToken, async (req
             return res.status(400).json({ error: nameValidation.error });
         }
 
-        // Get project root
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
-        if (!projectRoot) {
-            return res.status(404).json({ error: 'Project not found' });
-        }
-
-        // Validate old path
-        const oldValidation = validatePathInProject(projectRoot, oldPath);
-        if (!oldValidation.valid) {
-            return res.status(403).json({ error: oldValidation.error });
-        }
-
-        const resolvedOldPath = oldValidation.resolved;
-
-        // Check if old path exists
-        try {
-            await fsPromises.access(resolvedOldPath);
-        } catch {
-            return res.status(404).json({ error: 'File or directory not found' });
-        }
-
-        // Build and validate new path
-        const parentDir = path.dirname(resolvedOldPath);
-        const resolvedNewPath = path.join(parentDir, newName);
-        const newValidation = validatePathInProject(projectRoot, resolvedNewPath);
-        if (!newValidation.valid) {
-            return res.status(403).json({ error: newValidation.error });
-        }
-
-        // Check if new path already exists
-        try {
-            await fsPromises.access(resolvedNewPath);
-            return res.status(409).json({ error: 'A file or directory with this name already exists' });
-        } catch {
-            // Doesn't exist, which is what we want
-        }
-
-        // Rename
-        await fsPromises.rename(resolvedOldPath, resolvedNewPath);
+        const adapter = await getProjectRuntimeAdapter(projectName, { userId: req.user?.id || null });
+        const renamed = await adapter.files.renameEntry(String(oldPath), newName);
 
         res.json({
             success: true,
-            oldPath: resolvedOldPath,
-            newPath: resolvedNewPath,
+            oldPath: renamed.from,
+            newPath: renamed.to,
             newName,
             message: 'Renamed successfully'
         });
     } catch (error) {
         console.error('Error renaming file/directory:', error);
-        if (error.code === 'EACCES') {
-            res.status(403).json({ error: 'Permission denied' });
-        } else if (error.code === 'ENOENT') {
-            res.status(404).json({ error: 'File or directory not found' });
-        } else if (error.code === 'EXDEV') {
-            res.status(400).json({ error: 'Cannot move across different filesystems' });
-        } else {
-            res.status(500).json({ error: error.message });
-        }
+        res.status(getFileOperationStatusCode(error)).json({ error: error.message });
     }
 });
 
@@ -1163,64 +1082,24 @@ app.put('/api/projects/:projectName/files/rename', authenticateToken, async (req
 app.delete('/api/projects/:projectName/files', authenticateToken, async (req, res) => {
     try {
         const { projectName } = req.params;
-        const { path: targetPath, type } = req.body;
+        const { path: targetPath } = req.body;
 
-        // Validate input
         if (!targetPath) {
             return res.status(400).json({ error: 'Path is required' });
         }
 
-        // Get project root
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
-        if (!projectRoot) {
-            return res.status(404).json({ error: 'Project not found' });
-        }
-
-        // Validate path
-        const validation = validatePathInProject(projectRoot, targetPath);
-        if (!validation.valid) {
-            return res.status(403).json({ error: validation.error });
-        }
-
-        const resolvedPath = validation.resolved;
-
-        // Check if path exists and get stats
-        let stats;
-        try {
-            stats = await fsPromises.stat(resolvedPath);
-        } catch {
-            return res.status(404).json({ error: 'File or directory not found' });
-        }
-
-        // Prevent deleting the project root itself
-        if (resolvedPath === path.resolve(projectRoot)) {
-            return res.status(403).json({ error: 'Cannot delete project root directory' });
-        }
-
-        // Delete based on type
-        if (stats.isDirectory()) {
-            await fsPromises.rm(resolvedPath, { recursive: true, force: true });
-        } else {
-            await fsPromises.unlink(resolvedPath);
-        }
+        const adapter = await getProjectRuntimeAdapter(projectName, { userId: req.user?.id || null });
+        const deletedEntry = await adapter.files.deleteEntry(String(targetPath));
 
         res.json({
             success: true,
-            path: resolvedPath,
-            type: stats.isDirectory() ? 'directory' : 'file',
+            path: deletedEntry.path,
+            type: deletedEntry.entryType,
             message: 'Deleted successfully'
         });
     } catch (error) {
         console.error('Error deleting file/directory:', error);
-        if (error.code === 'EACCES') {
-            res.status(403).json({ error: 'Permission denied' });
-        } else if (error.code === 'ENOENT') {
-            res.status(404).json({ error: 'File or directory not found' });
-        } else if (error.code === 'ENOTEMPTY') {
-            res.status(400).json({ error: 'Directory is not empty' });
-        } else {
-            res.status(500).json({ error: error.message });
-        }
+        res.status(getFileOperationStatusCode(error)).json({ error: error.message });
     }
 });
 
@@ -1232,24 +1111,20 @@ const uploadFilesHandler = async (req, res) => {
 
     const uploadMiddleware = multer({
         storage: multer.diskStorage({
-            destination: (req, file, cb) => {
-                cb(null, os.tmpdir());
+            destination: (_request, _file, callback) => {
+                callback(null, os.tmpdir());
             },
-            filename: (req, file, cb) => {
-                // Use a unique temp name, but preserve original name in file.originalname
-                // Note: file.originalname may contain path separators for folder uploads
-                const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-                // For temp file, just use a safe unique name without the path
-                cb(null, `upload-${uniqueSuffix}`);
-            }
+            filename: (_request, file, callback) => {
+                const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9) + '-' + file.originalname;
+                callback(null, uniqueName);
+            },
         }),
         limits: {
-            fileSize: 50 * 1024 * 1024, // 50MB limit
-            files: 20 // Max 20 files at once
+            fileSize: 50 * 1024 * 1024,
+            files: 20
         }
     });
 
-    // Use multer middleware
     uploadMiddleware.array('files', 20)(req, res, async (err) => {
         if (err) {
             console.error('Multer error:', err);
@@ -1266,122 +1141,45 @@ const uploadFilesHandler = async (req, res) => {
             const { projectName } = req.params;
             const { targetPath, relativePaths } = req.body;
 
-            // Parse relative paths if provided (for folder uploads)
             let filePaths = [];
             if (relativePaths) {
                 try {
                     filePaths = JSON.parse(relativePaths);
-                } catch (e) {
-                    console.log('[DEBUG] Failed to parse relativePaths:', relativePaths);
+                } catch {
+                    filePaths = [];
                 }
             }
-
-            console.log('[DEBUG] File upload request:', {
-                projectName,
-                targetPath: JSON.stringify(targetPath),
-                targetPathType: typeof targetPath,
-                filesCount: req.files?.length,
-                relativePaths: filePaths
-            });
 
             if (!req.files || req.files.length === 0) {
                 return res.status(400).json({ error: 'No files provided' });
             }
 
-            // Get project root
-            const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
-            if (!projectRoot) {
-                return res.status(404).json({ error: 'Project not found' });
-            }
-
-            console.log('[DEBUG] Project root:', projectRoot);
-
-            // Validate and resolve target path
-            // If targetPath is empty or '.', use project root directly
-            const targetDir = targetPath || '';
-            let resolvedTargetDir;
-
-            console.log('[DEBUG] Target dir:', JSON.stringify(targetDir));
-
-            if (!targetDir || targetDir === '.' || targetDir === './') {
-                // Empty path means upload to project root
-                resolvedTargetDir = path.resolve(projectRoot);
-                console.log('[DEBUG] Using project root as target:', resolvedTargetDir);
-            } else {
-                const validation = validatePathInProject(projectRoot, targetDir);
-                if (!validation.valid) {
-                    console.log('[DEBUG] Path validation failed:', validation.error);
-                    return res.status(403).json({ error: validation.error });
-                }
-                resolvedTargetDir = validation.resolved;
-                console.log('[DEBUG] Resolved target dir:', resolvedTargetDir);
-            }
-
-            // Ensure target directory exists
-            try {
-                await fsPromises.access(resolvedTargetDir);
-            } catch {
-                await fsPromises.mkdir(resolvedTargetDir, { recursive: true });
-            }
-
-            // Move uploaded files from temp to target directory
-            const uploadedFiles = [];
-            console.log('[DEBUG] Processing files:', req.files.map(f => ({ originalname: f.originalname, path: f.path })));
-            for (let i = 0; i < req.files.length; i++) {
-                const file = req.files[i];
-                // Use relative path if provided (for folder uploads), otherwise use originalname
-                const fileName = (filePaths && filePaths[i]) ? filePaths[i] : file.originalname;
-                console.log('[DEBUG] Processing file:', fileName, '(originalname:', file.originalname + ')');
-                const destPath = path.join(resolvedTargetDir, fileName);
-
-                // Validate destination path
-                const destValidation = validatePathInProject(projectRoot, destPath);
-                if (!destValidation.valid) {
-                    console.log('[DEBUG] Destination validation failed for:', destPath);
-                    // Clean up temp file
-                    await fsPromises.unlink(file.path).catch(() => {});
-                    continue;
-                }
-
-                // Ensure parent directory exists (for nested files from folder upload)
-                const parentDir = path.dirname(destPath);
-                try {
-                    await fsPromises.access(parentDir);
-                } catch {
-                    await fsPromises.mkdir(parentDir, { recursive: true });
-                }
-
-                // Move file (copy + unlink to handle cross-device scenarios)
-                await fsPromises.copyFile(file.path, destPath);
-                await fsPromises.unlink(file.path);
-
-                uploadedFiles.push({
-                    name: fileName,
-                    path: destPath,
+            const adapter = await getProjectRuntimeAdapter(projectName, { userId: req.user?.id || null });
+            const uploadResult = await adapter.files.uploadBatch(
+                targetPath || '',
+                req.files.map((file, index) => ({
+                    name: (filePaths && filePaths[index]) ? filePaths[index] : file.originalname,
+                    relativePath: (filePaths && filePaths[index]) ? filePaths[index] : file.originalname,
+                    tempPath: file.path,
                     size: file.size,
-                    mimeType: file.mimetype
-                });
-            }
+                    mimeType: file.mimetype,
+                })),
+            );
+
+            await cleanupUploadedTempFiles(req.files);
 
             res.json({
                 success: true,
-                files: uploadedFiles,
-                targetPath: resolvedTargetDir,
-                message: `Uploaded ${uploadedFiles.length} file(s) successfully`
+                files: uploadResult.files,
+                targetPath: uploadResult.targetPath,
+                message: 'Uploaded ' + uploadResult.files.length + ' file(s) successfully'
             });
         } catch (error) {
             console.error('Error uploading files:', error);
-            // Clean up any remaining temp files
             if (req.files) {
-                for (const file of req.files) {
-                    await fsPromises.unlink(file.path).catch(() => {});
-                }
+                await cleanupUploadedTempFiles(req.files);
             }
-            if (error.code === 'EACCES') {
-                res.status(403).json({ error: 'Permission denied' });
-            } else {
-                res.status(500).json({ error: error.message });
-            }
+            res.status(getFileOperationStatusCode(error)).json({ error: error.message });
         }
     });
 };
@@ -1396,6 +1194,12 @@ function handlePluginWsProxy(clientWs, pathname) {
     const pluginName = pathname.replace('/plugin-ws/', '');
     if (!pluginName || /[^a-zA-Z0-9_-]/.test(pluginName)) {
         clientWs.close(4400, 'Invalid plugin name');
+        return;
+    }
+
+    if (pluginName === 'web-terminal') {
+        console.log('[Plugins] Using built-in Web Terminal fallback transport');
+        handleWebTerminalFallbackConnection(clientWs);
         return;
     }
 
@@ -1453,108 +1257,170 @@ wss.on('connection', (ws, request) => {
     }
 });
 
-/**
- * WebSocket Writer - Wrapper for WebSocket to match SSEStreamWriter interface
- *
- * Provider files use `createNormalizedMessage()` from `providers/types.js` and
- * adapter `normalizeMessage()` to produce unified NormalizedMessage events.
- * The writer simply serialises and sends.
- */
-class WebSocketWriter {
-    constructor(ws, userId = null) {
-        this.ws = ws;
-        this.sessionId = null;
-        this.userId = userId;
-        this.isWebSocketWriter = true;  // Marker for transport detection
-    }
-
-    send(data) {
-        if (this.ws.readyState === 1) { // WebSocket.OPEN
-            this.ws.send(JSON.stringify(data));
-        }
-    }
-
-    updateWebSocket(newRawWs) {
-        this.ws = newRawWs;
-    }
-
-    setSessionId(sessionId) {
-        this.sessionId = sessionId;
-    }
-
-    getSessionId() {
-        return this.sessionId;
-    }
-}
-
 // Handle chat WebSocket connections
 function handleChatConnection(ws, request) {
     console.log('[INFO] Chat WebSocket connected');
+
+    ws.userId = request?.user?.id ?? request?.user?.userId ?? null;
 
     // Add to connected clients for project updates
     connectedClients.add(ws);
 
     // Wrap WebSocket with writer for consistent interface with SSEStreamWriter
-    const writer = new WebSocketWriter(ws, request?.user?.id ?? request?.user?.userId ?? null);
+    const writer = new WebSocketWriter(ws, ws.userId);
 
     ws.on('message', async (message) => {
+        let data = null;
         try {
-            const data = JSON.parse(message);
+            data = JSON.parse(message);
 
             if (data.type === 'claude-command') {
+                const commandWriter = writer.bindSession(data.options?.sessionId || data.sessionId || null);
                 console.log('[DEBUG] User message:', data.command || '[Continue/Resume]');
                 console.log('📁 Project:', data.options?.projectPath || 'Unknown');
                 console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
 
                 // Use Claude Agents SDK
-                await queryClaudeSDK(data.command, data.options, writer);
+                await queryClaudeSDK(data.command, data.options, commandWriter);
             } else if (data.type === 'cursor-command') {
+                const commandWriter = writer.bindSession(data.options?.sessionId || data.sessionId || null);
                 console.log('[DEBUG] Cursor message:', data.command || '[Continue/Resume]');
                 console.log('📁 Project:', data.options?.cwd || 'Unknown');
                 console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
                 console.log('🤖 Model:', data.options?.model || 'default');
-                await spawnCursor(data.command, data.options, writer);
+                await spawnCursor(data.command, data.options, commandWriter);
             } else if (data.type === 'codex-command') {
+                const commandWriter = writer.bindSession(data.options?.sessionId || data.sessionId || null);
                 console.log('[DEBUG] Codex message:', data.command || '[Continue/Resume]');
                 console.log('📁 Project:', data.options?.projectPath || data.options?.cwd || 'Unknown');
                 console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
                 console.log('🤖 Model:', data.options?.model || 'default');
-                await queryCodex(data.command, data.options, writer);
+                await queryCodex(data.command, data.options, commandWriter);
             } else if (data.type === 'gemini-command') {
+                const commandWriter = writer.bindSession(data.options?.sessionId || data.sessionId || null);
                 console.log('[DEBUG] Gemini message:', data.command || '[Continue/Resume]');
                 console.log('📁 Project:', data.options?.projectPath || data.options?.cwd || 'Unknown');
                 console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
                 console.log('🤖 Model:', data.options?.model || 'default');
-                await spawnGemini(data.command, data.options, writer);
+                await spawnGemini(data.command, data.options, commandWriter);
             } else if (data.type === 'e2b-command') {
                 console.log('[DEBUG] E2B message:', data.command || '[Continue/Resume]');
-                console.log('🌐 Agent:', data.options?.agent || 'claude-code');
+                console.log('🌐 Agent:', data.options?.agent || 'claude');
                 console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
                 const sessionId = data.options?.sessionId || `e2b_${Date.now()}`;
-                if (!isE2BSessionActive(sessionId)) {
-                    await createE2BSession(sessionId, {
-                        agent: data.options?.agent || 'claude-code',
-                        cwd: data.options?.cwd,
-                        model: data.options?.model,
-                        ws,
-                        onMessage: (msg) => writer.send(msg),
+                const commandWriter = writer.bindSession(sessionId);
+                const sandboxId = data.options?.sandboxId || null;
+                const agent = data.options?.agent || 'claude';
+                const model = data.options?.model || null;
+                const featureToggles = data.options?.featureToggles;
+                const sandboxConnectHost = resolveSandboxConnectHostFromRequest(request);
+                const userId = request?.user?.id ?? request?.user?.userId ?? null;
+                const sessionSummary = typeof data.options?.sessionSummary === 'string'
+                    ? data.options.sessionSummary
+                    : null;
+
+                if (userId && sandboxId) {
+                    e2bSessionDb.upsert(userId, sessionId, {
+                        sandboxId,
+                        agent,
+                        model,
+                        summary: sessionSummary,
+                        status: 'active',
                     });
                 }
+
+                const sessionResult = await createE2BSession(sessionId, {
+                    agent,
+                    cwd: data.options?.cwd,
+                    model,
+                    featureToggles,
+                    resume: Boolean(data.options?.sessionId),
+                    sandboxId,
+                    sandboxConnectHost,
+                    ws,
+                    onMessage: (msg) => commandWriter.send(msg),
+                });
+
+                if (sessionResult.created) {
+                    commandWriter.send(
+                        createNormalizedMessage({
+                            kind: 'session_created',
+                            newSessionId: sessionId,
+                            sessionId,
+                            provider: 'e2b',
+                        }),
+                    );
+                }
+
                 if (data.command) {
-                    await sendMessageToE2BSession(sessionId, data.command);
+                    await sendMessageToE2BSession(sessionId, data.command, {
+                        agent,
+                        cwd: data.options?.cwd,
+                        model,
+                        featureToggles,
+                        sandboxId,
+                        sandboxConnectHost,
+                        ws,
+                        onMessage: (msg) => commandWriter.send(msg),
+                    });
+                }
+
+                if (userId && sandboxId) {
+                    const existingSessionMetadata = (() => {
+                        const record = e2bSessionDb.getBySessionId(sessionId);
+                        if (!record?.metadata_json) {
+                            return {};
+                        }
+
+                        if (typeof record.metadata_json === 'object') {
+                            return record.metadata_json;
+                        }
+
+                        try {
+                            return JSON.parse(record.metadata_json);
+                        } catch {
+                            return {};
+                        }
+                    })();
+
+                    e2bSessionDb.touch(sessionId, {
+                        summary: sessionSummary,
+                        model,
+                        status: null,
+                        metadata: {
+                            ...existingSessionMetadata,
+                            sandboxSessionId: sessionResult.sandboxSessionId,
+                            agentSessionId: sessionResult.agentSessionId,
+                            ...(sessionResult.runtime ? { runtime: sessionResult.runtime } : {}),
+                            ...(sessionResult.processId ? { processId: sessionResult.processId } : {}),
+                            ...(sessionResult.nativeSessionId ? { nativeClaudeSessionId: sessionResult.nativeSessionId } : {}),
+                        },
+                    });
                 }
             } else if (data.type === 'e2b-permission-response') {
-                if (data.sessionId && data.permissionId) {
-                    await respondE2BPermission(data.sessionId, data.permissionId, data.reply || 'once');
+                const permissionId = data.permissionId || data.requestId;
+                const reply = data.reply || (data.allow ? 'once' : 'reject');
+                if (data.sessionId && permissionId) {
+                    const userId = request?.user?.id ?? request?.user?.userId ?? null;
+                    const sessionRecord = e2bSessionDb.getBySessionId(data.sessionId);
+                    const requestSandboxConnectHost = resolveSandboxConnectHostFromRequest(request);
+                    if (userId && data.rememberEntry && reply === 'always') {
+                        await rememberClaudeToolPermission(userId, data.rememberEntry, {
+                            sandboxId: sessionRecord?.sandbox_id || null,
+                            sandboxConnectHost: requestSandboxConnectHost,
+                        });
+                    }
+                    await respondE2BPermission(data.sessionId, permissionId, reply);
                 }
             } else if (data.type === 'cursor-resume') {
                 // Backward compatibility: treat as cursor-command with resume and no prompt
                 console.log('[DEBUG] Cursor resume session (compat):', data.sessionId);
+                const commandWriter = writer.bindSession(data.sessionId || null);
                 await spawnCursor('', {
                     sessionId: data.sessionId,
                     resume: true,
                     cwd: data.options?.cwd
-                }, writer);
+                }, commandWriter);
             } else if (data.type === 'abort-session') {
                 console.log('[DEBUG] Abort session request:', data.sessionId);
                 const provider = data.provider || 'claude';
@@ -1577,9 +1443,11 @@ function handleChatConnection(ws, request) {
                 writer.send(createNormalizedMessage({ kind: 'complete', exitCode: success ? 0 : 1, aborted: true, success, sessionId: data.sessionId, provider }));
             } else if (data.type === 'claude-permission-response') {
                 // Relay UI approval decisions back into the SDK control flow.
-                // This does not persist permissions; it only resolves the in-flight request,
-                // introduced so the SDK can resume once the user clicks Allow/Deny.
                 if (data.requestId) {
+                    const userId = request?.user?.id ?? request?.user?.userId ?? null;
+                    if (userId && data.rememberEntry && data.allow) {
+                        await rememberClaudeToolPermission(userId, data.rememberEntry);
+                    }
                     resolveToolApproval(data.requestId, {
                         allow: Boolean(data.allow),
                         updatedInput: data.updatedInput,
@@ -1599,12 +1467,24 @@ function handleChatConnection(ws, request) {
 
                 if (provider === 'cursor') {
                     isActive = isCursorSessionActive(sessionId);
+                    if (isActive) {
+                        reconnectCursorSessionWriter(sessionId, ws);
+                    }
                 } else if (provider === 'codex') {
                     isActive = isCodexSessionActive(sessionId);
+                    if (isActive) {
+                        reconnectCodexSessionWriter(sessionId, ws);
+                    }
                 } else if (provider === 'gemini') {
                     isActive = isGeminiSessionActive(sessionId);
+                    if (isActive) {
+                        reconnectGeminiSessionWriter(sessionId, ws);
+                    }
                 } else if (provider === 'e2b') {
                     isActive = isE2BSessionActive(sessionId);
+                    if (isActive) {
+                        reconnectE2BSessionWriter(sessionId, ws);
+                    }
                 } else {
                     // Use Claude Agents SDK
                     isActive = isClaudeSDKSessionActive(sessionId);
@@ -1648,10 +1528,31 @@ function handleChatConnection(ws, request) {
             }
         } catch (error) {
             console.error('[ERROR] Chat WebSocket error:', error.message);
-            writer.send({
-                type: 'error',
-                error: error.message
-            });
+            const inferredProvider = (() => {
+                const type = typeof data?.type === 'string' ? data.type : '';
+                if (type === 'cursor-command' || type === 'cursor-resume') return 'cursor';
+                if (type === 'codex-command') return 'codex';
+                if (type === 'gemini-command') return 'gemini';
+                if (type === 'e2b-command') {
+                    return resolveE2BAgentProvider(data?.options?.agent || 'claude');
+                }
+                if (type === 'e2b-permission-response') {
+                    return resolveE2BAgentProvider(data?.provider || 'claude');
+                }
+                return 'claude';
+            })();
+            const errorSessionId =
+                writer.getSessionId?.() ||
+                data?.options?.sessionId ||
+                data?.sessionId ||
+                null;
+
+            writer.send(createNormalizedMessage({
+                kind: 'error',
+                content: error.message,
+                sessionId: errorSessionId,
+                provider: inferredProvider,
+            }));
         }
     });
 
@@ -1860,6 +1761,7 @@ function handleShellConnection(ws) {
                         cwd: resolvedProjectPath,
                         env: {
                             ...process.env,
+                            ...(!isPlainShell ? { PATH: buildAgentCliPath(process.env.PATH) } : {}),
                             TERM: 'xterm-256color',
                             COLORTERM: 'truecolor',
                             FORCE_COLOR: '3'
@@ -2602,12 +2504,19 @@ async function startServer() {
         });
 
         // Clean up plugin processes on shutdown
-        const shutdownPlugins = async () => {
+        let shutdownInProgress = false;
+        const shutdownPlugins = async (signal = 'unknown') => {
+            if (shutdownInProgress) {
+                return;
+            }
+
+            shutdownInProgress = true;
+            console.log(`[INFO] Shutdown requested via ${signal}`);
             await stopAllPlugins();
             process.exit(0);
         };
-        process.on('SIGTERM', () => void shutdownPlugins());
-        process.on('SIGINT', () => void shutdownPlugins());
+        process.on('SIGTERM', () => void shutdownPlugins('SIGTERM'));
+        process.on('SIGINT', () => void shutdownPlugins('SIGINT'));
     } catch (error) {
         console.error('[ERROR] Failed to start server:', error);
         process.exit(1);

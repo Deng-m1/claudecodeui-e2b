@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
 import type {
@@ -50,8 +50,6 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
       (prevMessage.type === 'user') ||
       (prevMessage.type === 'tool') ||
       (prevMessage.type === 'error'));
-  const messageRef = useRef<HTMLDivElement | null>(null);
-  const [isExpanded, setIsExpanded] = useState(false);
   const permissionSuggestion = getClaudePermissionSuggestion(message, provider);
   const [permissionGrantState, setPermissionGrantState] = useState<PermissionGrantState>('idle');
   const userCopyContent = String(message.content || '');
@@ -75,32 +73,6 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
     setPermissionGrantState('idle');
   }, [permissionSuggestion?.entry, message.toolId]);
 
-  useEffect(() => {
-    const node = messageRef.current;
-    if (!autoExpandTools || !node || !message.isToolUse) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting && !isExpanded) {
-            setIsExpanded(true);
-            const details = node.querySelectorAll<HTMLDetailsElement>('details');
-            details.forEach((detail) => {
-              detail.open = true;
-            });
-          }
-        });
-      },
-      { threshold: 0.1 }
-    );
-
-    observer.observe(node);
-
-    return () => {
-      observer.unobserve(node);
-    };
-  }, [autoExpandTools, isExpanded, message.isToolUse]);
-
   const formattedTime = useMemo(() => new Date(message.timestamp).toLocaleTimeString(), [message.timestamp]);
   const shouldHideThinkingMessage = Boolean(message.isThinking && !showThinking);
 
@@ -110,7 +82,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
 
   return (
     <div
-      ref={messageRef}
+      data-testid={`chat-message-${message.type}`}
       data-message-timestamp={message.timestamp || undefined}
       className={`chat-message ${message.type} ${isGrouped ? 'grouped' : ''} ${message.type === 'user' ? 'flex justify-end px-3 sm:px-0' : 'px-3 sm:px-0'}`}
     >
@@ -473,4 +445,3 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
 });
 
 export default MessageComponent;
-

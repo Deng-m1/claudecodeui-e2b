@@ -9,7 +9,9 @@
     "copied": "消息已复制",
     "selectFormat": "选择复制格式",
     "copyAsMarkdown": "复制为 Markdown",
-    "copyAsText": "复制为纯文本"
+    "copyAsText": "复制为纯文本",
+    "markdownShort": "MD",
+    "textShort": "TXT"
   },
   "messageTypes": {
     "user": "U",
@@ -231,12 +233,16 @@
       "restart": "重启",
       "restartTitle": "重启 Shell（请先断开连接）",
       "connect": "在 Shell 中继续",
-      "connectTitle": "连接到 Shell"
+      "connectTitle": "连接到 Shell",
+      "attach": "附加终端",
+      "attachTitle": "连接到现有会话终端"
     },
     "loading": "正在加载终端...",
     "connecting": "正在连接到 Shell...",
+    "attaching": "正在附加到终端...",
     "startSession": "启动新的 Claude 会话",
     "resumeSession": "恢复会话：{{displayName}}...",
+    "attachSession": "连接到终端：{{displayName}}",
     "runCommand": "在 {{projectName}} 中运行 {{command}}",
     "startCli": "在 {{projectName}} 中启动 Claude CLI",
     "defaultCommand": "命令"

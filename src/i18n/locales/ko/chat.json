@@ -9,7 +9,9 @@
     "copied": "메시지 복사됨",
     "selectFormat": "복사 형식 선택",
     "copyAsMarkdown": "마크다운으로 복사",
-    "copyAsText": "텍스트로 복사"
+    "copyAsText": "텍스트로 복사",
+    "markdownShort": "MD",
+    "textShort": "TXT"
   },
   "messageTypes": {
     "user": "U",
@@ -208,12 +210,16 @@
       "restart": "재시작",
       "restartTitle": "Shell 재시작 (먼저 연결 끊기)",
       "connect": "Shell에서 계속",
-      "connectTitle": "Shell에 연결"
+      "connectTitle": "Shell에 연결",
+      "attach": "터미널 연결",
+      "attachTitle": "기존 세션 터미널에 연결"
     },
     "loading": "터미널 로딩 중...",
     "connecting": "Shell에 연결 중...",
+    "attaching": "터미널에 연결 중...",
     "startSession": "새 Claude 세션 시작",
     "resumeSession": "세션 재개: {{displayName}}...",
+    "attachSession": "터미널에 연결: {{displayName}}",
     "runCommand": "{{projectName}}에서 {{command}} 실행",
     "startCli": "{{projectName}}에서 Claude CLI 시작",
     "defaultCommand": "명령어"

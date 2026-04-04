@@ -38,13 +38,24 @@ export const fetchGithubTokenCredentials = async () => {
   return (data.credentials || []).filter((credential) => credential.is_active);
 };
 
-export const browseFilesystemFolders = async (pathToBrowse: string) => {
-  const endpoint = `/browse-filesystem?path=${encodeURIComponent(pathToBrowse)}`;
+export const browseFilesystemFolders = async (
+  pathToBrowse: string,
+  options: { showHidden?: boolean } = {},
+) => {
+  const params = new URLSearchParams({
+    path: pathToBrowse,
+  });
+
+  if (options.showHidden) {
+    params.set('showHidden', 'true');
+  }
+
+  const endpoint = `/browse-filesystem?${params.toString()}`;
   const response = await api.get(endpoint);
   const data = await parseJson<BrowseFilesystemResponse>(response);
 
   if (!response.ok) {
-    throw new Error(data.error || 'Failed to browse filesystem');
+    throw new Error(data.details || data.error || 'Failed to browse filesystem');
   }
 
   return {

@@ -2,6 +2,7 @@ import { Settings, Sparkles, PanelLeftOpen } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 const DISCORD_INVITE_URL = 'https://discord.gg/buxwujPNRE';
+const SHOW_COMMUNITY_LINK = false;
 
 function DiscordIcon({ className }: { className?: string }) {
   return (
@@ -51,16 +52,18 @@ export default function SidebarCollapsed({
       </button>
 
       {/* Discord */}
-      <a
-        href={DISCORD_INVITE_URL}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="group flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-accent/80"
-        aria-label={t('actions.joinCommunity')}
-        title={t('actions.joinCommunity')}
-      >
-        <DiscordIcon className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-foreground" />
-      </a>
+      {SHOW_COMMUNITY_LINK && (
+        <a
+          href={DISCORD_INVITE_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="group flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-accent/80"
+          aria-label={t('actions.joinCommunity')}
+          title={t('actions.joinCommunity')}
+        >
+          <DiscordIcon className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-foreground" />
+        </a>
+      )}
 
       {/* Update indicator */}
       {updateAvailable && (

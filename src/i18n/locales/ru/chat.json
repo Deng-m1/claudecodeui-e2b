@@ -9,7 +9,9 @@
     "copied": "Сообщение скопировано",
     "selectFormat": "Выбрать формат копирования",
     "copyAsMarkdown": "Копировать как Markdown",
-    "copyAsText": "Копировать как текст"
+    "copyAsText": "Копировать как текст",
+    "markdownShort": "MD",
+    "textShort": "TXT"
   },
   "messageTypes": {
     "user": "П",
@@ -226,12 +228,16 @@
       "restart": "Перезапустить",
       "restartTitle": "Перезапустить оболочку (сначала отключитесь)",
       "connect": "Продолжить в оболочке",
-      "connectTitle": "Подключиться к оболочке"
+      "connectTitle": "Подключиться к оболочке",
+      "attach": "Подключить терминал",
+      "attachTitle": "Подключиться к существующему терминалу сеанса"
     },
     "loading": "Загрузка терминала...",
     "connecting": "Подключение к оболочке...",
+    "attaching": "Подключение к терминалу...",
     "startSession": "Начать новый сеанс Claude",
     "resumeSession": "Возобновить сеанс: {{displayName}}...",
+    "attachSession": "Подключить терминал: {{displayName}}",
     "runCommand": "Выполнить {{command}} в {{projectName}}",
     "startCli": "Запуск Claude CLI в {{projectName}}",
     "defaultCommand": "команда"

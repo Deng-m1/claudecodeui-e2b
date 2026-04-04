@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import ChatInterface from '../../chat/view/ChatInterface';
 import FileTree from '../../file-tree/view/FileTree';
 import StandaloneShell from '../../standalone-shell/view/StandaloneShell';
@@ -12,6 +12,7 @@ import { useEditorSidebar } from '../../code-editor/hooks/useEditorSidebar';
 import EditorSidebar from '../../code-editor/view/EditorSidebar';
 import type { Project } from '../../../types/app';
 import { TaskMasterPanel } from '../../task-master';
+import { isProjectTabSupported } from '../../../utils/projectCapabilities';
 import MainContentHeader from './subcomponents/MainContentHeader';
 import MainContentStateView from './subcomponents/MainContentStateView';
 import ErrorBoundary from './ErrorBoundary';
@@ -35,6 +36,7 @@ function MainContent({
   ws,
   sendMessage,
   latestMessage,
+  messageFeed,
   isMobile,
   onMenuClick,
   isLoading,
@@ -44,6 +46,8 @@ function MainContent({
   onSessionProcessing,
   onSessionNotProcessing,
   processingSessions,
+  wasSessionMarkedProcessingRecently,
+  wasSessionMarkedNotProcessingRecently,
   onReplaceTemporarySession,
   onNavigateToSession,
   onShowSettings,
@@ -87,6 +91,31 @@ function MainContent({
     }
   }, [shouldShowTasksTab, activeTab, setActiveTab]);
 
+  useEffect(() => {
+    if (!selectedProject) {
+      return;
+    }
+
+    if (!isProjectTabSupported(selectedProject, activeTab, shouldShowTasksTab)) {
+      setActiveTab('chat');
+    }
+  }, [activeTab, selectedProject, setActiveTab, shouldShowTasksTab]);
+
+  const shellMountKey = selectedProject
+    ? `${selectedProject.name}:${selectedSession?.id || '__no_session__'}`
+    : null;
+  const [persistedShellKey, setPersistedShellKey] = useState<string | null>(
+    activeTab === 'shell' ? shellMountKey : null,
+  );
+
+  useEffect(() => {
+    if (activeTab === 'shell' && shellMountKey) {
+      setPersistedShellKey(shellMountKey);
+    }
+  }, [activeTab, shellMountKey]);
+
+  const shouldKeepShellMounted = Boolean(shellMountKey) && persistedShellKey === shellMountKey;
+
   if (isLoading) {
     return <MainContentStateView mode="loading" isMobile={isMobile} onMenuClick={onMenuClick} />;
   }
@@ -117,6 +146,7 @@ function MainContent({
                 ws={ws}
                 sendMessage={sendMessage}
                 latestMessage={latestMessage}
+                messageFeed={messageFeed}
                 onFileOpen={handleFileOpen}
                 onInputFocusChange={onInputFocusChange}
                 onSessionActive={onSessionActive}
@@ -124,6 +154,8 @@ function MainContent({
                 onSessionProcessing={onSessionProcessing}
                 onSessionNotProcessing={onSessionNotProcessing}
                 processingSessions={processingSessions}
+                wasSessionMarkedProcessingRecently={wasSessionMarkedProcessingRecently}
+                wasSessionMarkedNotProcessingRecently={wasSessionMarkedNotProcessingRecently}
                 onReplaceTemporarySession={onReplaceTemporarySession}
                 onNavigateToSession={onNavigateToSession}
                 onShowSettings={onShowSettings}
@@ -144,13 +176,15 @@ function MainContent({
             </div>
           )}
 
-          {activeTab === 'shell' && (
-            <div className="h-full w-full overflow-hidden">
+          {shouldKeepShellMounted && (
+            <div className={`h-full w-full overflow-hidden ${activeTab === 'shell' ? 'block' : 'hidden'}`}>
               <StandaloneShell
+                key={shellMountKey || 'shell'}
                 project={selectedProject}
                 session={selectedSession}
                 showHeader={false}
                 isActive={activeTab === 'shell'}
+                autoConnect={activeTab === 'shell'}
               />
             </div>
           )}

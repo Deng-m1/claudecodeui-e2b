@@ -1,7 +1,28 @@
 import { TFunction } from 'i18next';
 
+const SQLITE_UTC_DATETIME_RE = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+
+export const normalizeDateString = (value?: string | null) => {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  if (SQLITE_UTC_DATETIME_RE.test(trimmed)) {
+    return `${trimmed.replace(' ', 'T')}Z`;
+  }
+
+  return trimmed;
+};
+
+export const parseDateString = (value?: string | null) => new Date(normalizeDateString(value));
+
 export const formatTimeAgo = (dateString: string, currentTime: Date, t: TFunction) => {
-  const date = new Date(dateString);
+  const date = parseDateString(dateString);
   const now = currentTime;
 
   // Check if date is valid

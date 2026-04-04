@@ -19,7 +19,7 @@ export default function SidebarProjectsState({
 }: SidebarProjectsStateProps) {
   if (isLoading) {
     return (
-      <div className="px-4 py-12 text-center md:py-8">
+      <div className="px-4 py-12 text-center md:py-8" data-testid="sidebar-projects-loading">
         <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-muted md:mb-3">
           <div className="h-6 w-6 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
         </div>

@@ -1,4 +1,5 @@
 import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
+import type { WebSocketFeedMessage } from '../../../contexts/WebSocketContext';
 
 export type Provider = SessionProvider;
 
@@ -75,6 +76,7 @@ export interface PendingPermissionRequest {
   toolName: string;
   input?: unknown;
   context?: unknown;
+  provider?: string;
   sessionId?: string | null;
   receivedAt?: Date;
 }
@@ -97,6 +99,7 @@ export interface ChatInterfaceProps {
   ws: WebSocket | null;
   sendMessage: (message: unknown) => void;
   latestMessage: any;
+  messageFeed: WebSocketFeedMessage[];
   onFileOpen?: (filePath: string, diffInfo?: any) => void;
   onInputFocusChange?: (focused: boolean) => void;
   onSessionActive?: (sessionId?: string | null) => void;
@@ -104,6 +107,8 @@ export interface ChatInterfaceProps {
   onSessionProcessing?: (sessionId?: string | null) => void;
   onSessionNotProcessing?: (sessionId?: string | null) => void;
   processingSessions?: Set<string>;
+  wasSessionMarkedProcessingRecently?: (sessionId?: string | null, windowMs?: number) => boolean;
+  wasSessionMarkedNotProcessingRecently?: (sessionId?: string | null, windowMs?: number) => boolean;
   onReplaceTemporarySession?: (sessionId?: string | null) => void;
   onNavigateToSession?: (targetSessionId: string) => void;
   onShowSettings?: () => void;

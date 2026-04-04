@@ -109,15 +109,15 @@ export default function ClaudeStatus({
       : t('claudeStatus.elapsed.startingNow', { defaultValue: 'Starting now' });
 
   return (
-    <div className="animate-in slide-in-from-bottom mb-3 w-full duration-300 sm:mb-6">
-      <div className="relative mx-auto max-w-4xl overflow-hidden rounded-2xl border border-border/70 bg-card/90 shadow-md backdrop-blur-md">
+    <div className="animate-in slide-in-from-bottom mb-2 w-full duration-300 sm:mb-6" data-testid="chat-status-card">
+      <div className="relative mx-auto max-w-4xl overflow-hidden rounded-xl border border-border/70 bg-card/90 shadow-sm backdrop-blur-md sm:rounded-2xl sm:shadow-md">
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-primary/10 via-transparent to-sky-500/10 dark:from-primary/20 dark:to-sky-400/20" />
 
-        <div className="relative px-3 py-3 sm:px-4 sm:py-3.5">
-          <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex min-w-0 items-start gap-3" role="status" aria-live="polite">
-              <div className="relative mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl border border-primary/25 bg-primary/10">
-                <SessionProviderLogo provider={provider} className="h-5 w-5" />
+        <div className="relative px-2.5 py-2 sm:px-4 sm:py-3.5">
+          <div className="flex items-center justify-between gap-2.5 sm:gap-3">
+            <div className="flex min-w-0 items-center gap-2.5" role="status" aria-live="polite">
+              <div className="relative flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border border-primary/25 bg-primary/10 sm:h-9 sm:w-9 sm:rounded-xl">
+                <SessionProviderLogo provider={provider} className="h-4.5 w-4.5 sm:h-5 sm:w-5" />
                 <span className="absolute -right-0.5 -top-0.5 flex h-2.5 w-2.5">
                   {isLoading && (
                     <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400/70" />
@@ -132,11 +132,11 @@ export default function ClaudeStatus({
               </div>
 
               <div className="min-w-0">
-                <div className="mb-0.5 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground">
-                  <span>{providerLabel}</span>
+                <div className="mb-0.5 flex items-center gap-1.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-foreground sm:gap-2 sm:text-[10px] sm:tracking-[0.15em]">
+                  <span className="truncate">{providerLabel}</span>
                   <span
                     className={cn(
-                      'rounded-full px-2 py-0.5 text-[9px] tracking-[0.14em]',
+                      'rounded-full px-1.5 py-0.5 text-[8px] tracking-[0.12em] sm:px-2 sm:text-[9px] sm:tracking-[0.14em]',
                       isLoading
                         ? 'bg-emerald-500/15 text-emerald-500 dark:text-emerald-400'
                         : 'bg-amber-500/15 text-amber-600 dark:text-amber-400',
@@ -148,7 +148,7 @@ export default function ClaudeStatus({
                   </span>
                 </div>
 
-                <p className="truncate text-sm font-semibold text-foreground sm:text-[15px]">
+                <p className="truncate text-[13px] font-semibold leading-tight text-foreground sm:text-[15px]">
                   {cleanStatusText}
                   {isLoading && (
                     <span aria-hidden="true" className="text-primary">
@@ -157,10 +157,10 @@ export default function ClaudeStatus({
                   )}
                 </p>
 
-                <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground sm:text-xs">
+                <div className="mt-0.5 flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground sm:mt-1 sm:gap-1.5 sm:text-xs">
                   <span
                     aria-hidden="true"
-                    className="-ml-2 inline-flex items-center rounded-full border border-border/70 bg-background/60 px-2 py-0.5"
+                    className="inline-flex items-center rounded-full border border-border/70 bg-background/60 px-1.5 py-0 sm:px-2 sm:py-0.5"
                   >
                     {elapsedLabel}
                   </span>
@@ -169,17 +169,20 @@ export default function ClaudeStatus({
             </div>
 
             {canInterrupt && onAbort && (
-              <div className="w-full sm:w-auto sm:text-right">
+              <div className="flex-shrink-0">
                 <button
                   type="button"
+                  data-testid="chat-abort-button"
                   onClick={onAbort}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-destructive px-3.5 py-2 text-sm font-semibold text-destructive-foreground shadow-sm ring-1 ring-destructive/40 transition-opacity hover:opacity-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive/70 active:opacity-90 sm:w-auto"
+                  aria-label={t('claudeStatus.controls.stopGeneration', { defaultValue: 'Stop Generation' })}
+                  title={t('claudeStatus.controls.stopGeneration', { defaultValue: 'Stop Generation' })}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-destructive text-destructive-foreground shadow-sm ring-1 ring-destructive/40 transition-opacity hover:opacity-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive/70 active:opacity-90 sm:h-auto sm:w-auto sm:gap-2 sm:rounded-xl sm:px-3.5 sm:py-2 sm:text-sm"
                 >
                   <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                   </svg>
-                  <span>{t('claudeStatus.controls.stopGeneration', { defaultValue: 'Stop Generation' })}</span>
-                  <span className="rounded-md bg-black/20 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-destructive-foreground/95">
+                  <span className="hidden sm:inline">{t('claudeStatus.controls.stopGeneration', { defaultValue: 'Stop Generation' })}</span>
+                  <span className="hidden rounded-md bg-black/20 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-destructive-foreground/95 sm:inline-flex">
                     Esc
                   </span>
                 </button>

@@ -1,4 +1,4 @@
-import { Bell, Bot, Cloud, GitBranch, Key, ListChecks, Palette, Puzzle } from 'lucide-react';
+import { Bell, Bot, Cloud, GitBranch, Key, KeyRound, ListChecks, Palette, Puzzle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../../../lib/utils';
 import { PillBar, Pill } from '../../../shared/view/ui';
@@ -20,6 +20,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'appearance', labelKey: 'mainTabs.appearance', icon: Palette },
   { id: 'git', labelKey: 'mainTabs.git', icon: GitBranch },
   { id: 'api', labelKey: 'mainTabs.apiTokens', icon: Key },
+  { id: 'authCenter', labelKey: 'mainTabs.authCenter', icon: KeyRound },
   { id: 'tasks', labelKey: 'mainTabs.tasks', icon: ListChecks },
   { id: 'plugins', labelKey: 'mainTabs.plugins', icon: Puzzle },
   { id: 'notifications', labelKey: 'mainTabs.notifications', icon: Bell },
@@ -59,23 +60,28 @@ export default function SettingsSidebar({ activeTab, onChange }: SettingsSidebar
 
       {/* Mobile horizontal nav — pill bar */}
       <div className="flex-shrink-0 border-b border-border px-3 py-2 md:hidden">
-        <PillBar className="scrollbar-hide w-full overflow-x-auto">
-          {NAV_ITEMS.map((item) => {
-            const Icon = item.icon;
+        <div
+          className="scrollbar-hide -mx-1 overflow-x-auto px-1 [-webkit-overflow-scrolling:touch] [overscroll-behavior-x:contain] [touch-action:pan-x]"
+          data-horizontal-scroll-container
+        >
+          <PillBar className="w-max">
+            {NAV_ITEMS.map((item) => {
+              const Icon = item.icon;
 
-            return (
-              <Pill
-                key={item.id}
-                isActive={activeTab === item.id}
-                onClick={() => onChange(item.id)}
-                className="flex-shrink-0"
-              >
-                <Icon className="h-3.5 w-3.5" />
-                {t(item.labelKey)}
-              </Pill>
-            );
-          })}
-        </PillBar>
+              return (
+                <Pill
+                  key={item.id}
+                  isActive={activeTab === item.id}
+                  onClick={() => onChange(item.id)}
+                  className="flex-shrink-0"
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  {t(item.labelKey)}
+                </Pill>
+              );
+            })}
+          </PillBar>
+        </div>
       </div>
     </>
   );

@@ -104,10 +104,125 @@
     "appearance": "外观",
     "git": "Git",
     "apiTokens": "API 和令牌",
+    "authCenter": "认证中心",
     "tasks": "任务",
     "notifications": "通知",
     "plugins": "插件",
     "e2b": "E2B 云端"
+  },
+  "authCenter": {
+    "title": "认证中心",
+    "description": "参考 CLIProxy 风格管理 Claude、Codex、Gemini 和 Cursor 的认证。你可以创建可复用的认证配置，完成回调或设备码登录流程，并把项目绑定到自动复制、禁用或某个已保存配置。",
+    "project": "项目",
+    "sections": {
+      "projectBinding": {
+        "title": "项目绑定",
+        "description": "为每个项目指定要使用的认证来源。云端项目会把这些选择应用到 E2B 容器内，本地项目会把映射保存到项目配置中。"
+      },
+      "oauth": {
+        "title": "OAuth 登录中心",
+        "description": "使用和 CLIProxyAPI 类似的回调粘贴流程。先发起登录，打开授权链接，最后把回调 URL 粘贴回这里完成保存。",
+        "flowCount": "{{count}} 个流程"
+      },
+      "providers": {
+        "title": "{{provider}} 配置",
+        "savedProfiles": "已保存配置"
+      }
+    },
+    "cards": {
+      "codexOauth": {
+        "title": "Codex OAuth",
+        "description": "通过 Codex OAuth 流程登录，并保存为可复用的认证配置。",
+        "button": "登录"
+      },
+      "claudeOauth": {
+        "title": "Anthropic OAuth",
+        "description": "通过 Anthropic OAuth 流程登录，并保存为可复用的 Claude 认证配置。",
+        "button": "登录"
+      },
+      "geminiOauth": {
+        "title": "Gemini OAuth",
+        "description": "通过 Google OAuth 流程登录，并保存为可复用的 Gemini 认证配置。",
+        "button": "登录"
+      },
+      "codexDevice": {
+        "title": "Codex 设备码",
+        "description": "适用于更方便粘贴回调的场景，可通过设备码流程完成登录。",
+        "button": "开始设备码登录"
+      }
+    },
+    "actions": {
+      "refresh": "刷新",
+      "save": "保存",
+      "login": "登录",
+      "startDeviceLogin": "开始设备码登录",
+      "submitCallback": "提交回调 URL",
+      "submitDeviceLogin": "提交设备码登录",
+      "saveCurrentHostAuth": "保存当前主机认证",
+      "importPath": "导入路径",
+      "saveApiKeyProfile": "保存 API Key 配置",
+      "openUrl": "打开链接",
+      "copy": "复制",
+      "copied": "已复制",
+      "cancel": "取消",
+      "use": "使用",
+      "openCenter": "打开认证中心"
+    },
+    "methods": {
+      "callback": "粘贴回调",
+      "device": "设备码",
+      "apiKey": "API Key",
+      "path": "导入路径",
+      "host": "主机快照"
+    },
+    "modes": {
+      "auto": "自动复制主机认证",
+      "disabled": "禁用"
+    },
+    "fields": {
+      "profileName": "{{provider}} 配置名称"
+    },
+    "placeholders": {
+      "profileName": "{{provider}} 配置名称",
+      "importPath": "认证文件或目录路径",
+      "apiKey": "粘贴 API Key",
+      "callbackUrl": "http://localhost:1455/auth/callback?code=...&state=..."
+    },
+    "labels": {
+      "cloudProject": "云端",
+      "localProject": "本地",
+      "hostStatus": "主机状态",
+      "authorizationUrl": "授权链接",
+      "redirectUri": "回调地址",
+      "verificationUrl": "验证地址",
+      "code": "验证码",
+      "projectBadge": "项目",
+      "savedProfile": "已保存配置",
+      "files": "文件",
+      "env": "环境变量"
+    },
+    "hints": {
+      "remoteBrowserMode": "远程浏览器模式：当授权流程跳转到 http://localhost:... 时，复制完整回调 URL 并粘贴到下方。",
+      "launcherDescription": "默认会把可用的主机认证同步到 E2B 云端项目。你也可以为某个 provider 绑定已保存的认证配置，或者在当前云端项目里禁用它。",
+      "savedProfilesFromCenter": "这些配置来自 设置 > 认证中心。",
+      "createProfilesFirst": "请先到 设置 > 认证中心 创建可复用的认证配置。"
+    },
+    "messages": {
+      "projectMappingSaved": "项目认证映射已保存。",
+      "profileSaved": "{{provider}} 配置已保存。",
+      "profileDeleted": "配置已删除。",
+      "clipboardFailed": "剪贴板访问失败"
+    },
+    "empty": {
+      "noProjects": "暂未检测到项目。",
+      "noSavedProfiles": "还没有已保存配置。"
+    },
+    "status": {
+      "ready": "可用",
+      "off": "关闭",
+      "authenticated": "已认证",
+      "noHostAuth": "未检测到主机认证"
+    }
   },
   "notifications": {
     "title": "通知",
@@ -416,6 +531,35 @@
         "acceptEdits": "sandboxMode=workspace-write, approvalPolicy=never。所有命令在项目目录内自动执行。",
         "bypassPermissions": "sandboxMode=danger-full-access, approvalPolicy=never。完全系统访问权限，仅在可信环境中使用。",
         "overrideNote": "您可以使用聊天界面中的模式按钮按会话覆盖此设置。"
+      },
+      "features": {
+        "title": "常用运行能力",
+        "description": "控制新一轮 Codex 对话默认启用的常见能力。",
+        "note": "这些开关会映射到 Codex CLI 的 feature flags 或 SDK 线程参数，并在下一轮 Codex 对话生效。MCP 服务器仍在 MCP 标签页中管理。",
+        "multiAgent": {
+          "title": "子 Agent",
+          "description": "允许 Codex 在运行过程中把任务委派给子 Agent。"
+        },
+        "parallelFanOut": {
+          "title": "并行 Fan-Out",
+          "description": "允许 Codex 在 CLI 支持时并行拆分和执行任务。"
+        },
+        "reasoningSummaries": {
+          "title": "推理摘要",
+          "description": "允许 Codex 使用推理预算并输出推理摘要。"
+        },
+        "shellTool": {
+          "title": "Shell 工具",
+          "description": "允许 Codex 通过 Shell 工具执行命令。"
+        },
+        "webSearch": {
+          "title": "Web 搜索",
+          "description": "允许 Codex 在需要外部信息时使用实时网页搜索。"
+        },
+        "networkAccess": {
+          "title": "网络访问",
+          "description": "允许 workspace-write 沙箱访问外部网络。"
+        }
       }
     },
     "actions": {
@@ -512,6 +656,7 @@
       "running": "运行中",
       "idle": "无活动沙箱"
     },
+    "template": "模板：",
     "availableAgents": "可用代理：",
     "openInspector": "打开检查器",
     "controls": "沙箱控制",

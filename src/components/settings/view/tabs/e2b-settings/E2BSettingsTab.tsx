@@ -11,6 +11,7 @@ type SandboxStatus = {
   sandboxId?: string;
   inspectorUrl?: string;
   agents?: string[];
+  template?: string | null;
 };
 
 type SavedSandbox = {
@@ -199,6 +200,12 @@ export default function E2BSettingsTab() {
               <p className="text-sm text-muted-foreground">
                 {t('e2b.status.notConfiguredHint', { defaultValue: 'Set E2B_API_KEY in your .env file to enable cloud sandboxes.' })}
               </p>
+              {status.template && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span>{t('e2b.template', { defaultValue: 'Template:' })}</span>
+                  <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground">{status.template}</code>
+                </div>
+              )}
             </div>
           ) : status.sandboxId ? (
             <div className="space-y-3">
@@ -220,6 +227,12 @@ export default function E2BSettingsTab() {
                   ))}
                 </div>
               )}
+              {status.template && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span>{t('e2b.template', { defaultValue: 'Template:' })}</span>
+                  <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground">{status.template}</code>
+                </div>
+              )}
               {status.inspectorUrl && (
                 <a
                   href={status.inspectorUrl}
@@ -233,10 +246,18 @@ export default function E2BSettingsTab() {
               )}
             </div>
           ) : (
-            <div className="flex items-center gap-2">
-              <Badge variant="secondary" className="bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300">
-                {t('e2b.status.idle', { defaultValue: 'No Active Sandbox' })}
-              </Badge>
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <Badge variant="secondary" className="bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300">
+                  {t('e2b.status.idle', { defaultValue: 'No Active Sandbox' })}
+                </Badge>
+              </div>
+              {status.template && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span>{t('e2b.template', { defaultValue: 'Template:' })}</span>
+                  <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground">{status.template}</code>
+                </div>
+              )}
             </div>
           )}
         </div>

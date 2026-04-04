@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test"
+  short_description: "Session bridge regression suite"
+  default_prompt: "Use $test to run complete non-destructive regression testing for session creation, resume, switching, reconnect, permission, and E2B/local bridge behavior."

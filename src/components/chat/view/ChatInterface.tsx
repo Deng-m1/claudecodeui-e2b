@@ -11,12 +11,8 @@ import { useChatComposerState } from '../hooks/useChatComposerState';
 import { useSessionStore } from '../../../stores/useSessionStore';
 import ChatMessagesPane from './subcomponents/ChatMessagesPane';
 import ChatComposer from './subcomponents/ChatComposer';
-
-
-type PendingViewSession = {
-  sessionId: string | null;
-  startedAt: number;
-};
+import { getPendingViewSessionId, type PendingViewSession } from '../utils/pendingSession';
+import { resolveEffectiveRuntimeMode } from '../../../utils/sessionSelection';
 
 function ChatInterface({
   selectedProject,
@@ -24,6 +20,7 @@ function ChatInterface({
   ws,
   sendMessage,
   latestMessage,
+  messageFeed,
   onFileOpen,
   onInputFocusChange,
   onSessionActive,
@@ -31,6 +28,8 @@ function ChatInterface({
   onSessionProcessing,
   onSessionNotProcessing,
   processingSessions,
+  wasSessionMarkedProcessingRecently,
+  wasSessionMarkedNotProcessingRecently,
   onReplaceTemporarySession,
   onNavigateToSession,
   onShowSettings,
@@ -81,6 +80,8 @@ function ChatInterface({
     selectedSession,
   });
 
+  const effectiveRuntimeMode = resolveEffectiveRuntimeMode(selectedProject, selectedSession, runtimeMode);
+
   const {
     chatMessages,
     addMessage,
@@ -123,6 +124,7 @@ function ChatInterface({
     autoScrollToBottom,
     externalMessageUpdate,
     processingSessions,
+    wasSessionMarkedNotProcessingRecently,
     resetStreamingState,
     pendingViewSessionRef,
     sessionStore,
@@ -177,7 +179,7 @@ function ChatInterface({
     selectedSession,
     currentSessionId,
     provider,
-    runtimeMode,
+    runtimeMode: effectiveRuntimeMode,
     permissionMode,
     cyclePermissionMode,
     cursorModel,
@@ -206,22 +208,109 @@ function ChatInterface({
     setPendingPermissionRequests,
   });
 
-  // On WebSocket reconnect, re-fetch the current session's messages from the server
-  // so missed streaming events are shown. Also reset isLoading.
-  const handleWebSocketReconnect = useCallback(async () => {
-    if (!selectedProject || !selectedSession) return;
-    const providerVal = (localStorage.getItem('selected-provider') as SessionProvider) || 'claude';
-    await sessionStore.refreshFromServer(selectedSession.id, {
-      provider: (selectedSession.__provider || providerVal) as SessionProvider,
-      projectName: selectedProject.name,
-      projectPath: selectedProject.fullPath || selectedProject.path || '',
+  const visiblePendingPermissionRequests = pendingPermissionRequests.filter((request) => {
+    const activePermissionSessionId =
+      selectedSession?.id || getPendingViewSessionId(currentSessionId, pendingViewSessionRef.current);
+
+    if (!activePermissionSessionId) {
+      return !request.sessionId;
+    }
+
+    return !request.sessionId || request.sessionId === activePermissionSessionId;
+  });
+
+  const resyncSelectedSession = useCallback(async () => {
+    if (!selectedProject || !selectedSession) {
+      return;
+    }
+
+    const transportProvider = selectedSession.__runtime === 'e2b'
+      ? 'e2b'
+      : (selectedSession.__provider || 'claude') as SessionProvider;
+
+    sendMessage({
+      type: 'check-session-status',
+      sessionId: selectedSession.id,
+      provider: transportProvider,
     });
-    setIsLoading(false);
-    setCanAbortSession(false);
-  }, [selectedProject, selectedSession, sessionStore, setIsLoading, setCanAbortSession]);
+
+    if (transportProvider === 'claude') {
+      sendMessage({
+        type: 'get-pending-permissions',
+        sessionId: selectedSession.id,
+      });
+    }
+
+    await sessionStore.refreshFromServer(selectedSession.id, {
+      provider: transportProvider,
+      projectName: selectedSession.__projectName || selectedProject.name,
+      projectPath: selectedSession.__projectPath || selectedProject.cloud?.workspacePath || selectedProject.fullPath || selectedProject.path || '',
+    });
+
+    if (!processingSessions?.has(selectedSession.id)) {
+      setIsLoading(false);
+      setCanAbortSession(false);
+    }
+  }, [processingSessions, selectedProject, selectedSession, sendMessage, sessionStore, setCanAbortSession, setIsLoading]);
+
+  // On WebSocket reconnect, re-bind the active session writer and re-fetch the current
+  // session history so missed updates are recovered after mobile/background resumes.
+  const handleWebSocketReconnect = useCallback(() => {
+    void resyncSelectedSession();
+  }, [resyncSelectedSession]);
+
+  useEffect(() => {
+    if (!selectedProject || !selectedSession) {
+      return;
+    }
+
+    if (selectedSession.__runtime !== 'e2b' || selectedSession.status !== 'active') {
+      return;
+    }
+
+    let cancelled = false;
+    let recoveryTimer: number | null = null;
+    let attemptCount = 0;
+    const maxAttempts = 5;
+
+    const runRecoveryPass = async () => {
+      if (cancelled || attemptCount >= maxAttempts) {
+        return;
+      }
+
+      attemptCount += 1;
+      await resyncSelectedSession();
+
+      if (cancelled || attemptCount >= maxAttempts) {
+        return;
+      }
+
+      recoveryTimer = window.setTimeout(() => {
+        void runRecoveryPass();
+      }, 2000);
+    };
+
+    recoveryTimer = window.setTimeout(() => {
+      void runRecoveryPass();
+    }, 750);
+
+    return () => {
+      cancelled = true;
+      if (recoveryTimer !== null) {
+        window.clearTimeout(recoveryTimer);
+      }
+    };
+  }, [
+    resyncSelectedSession,
+    selectedProject,
+    selectedSession?.__runtime,
+    selectedSession?.id,
+    selectedSession?.status,
+  ]);
 
   useChatRealtimeHandlers({
     latestMessage,
+    messageFeed,
     provider,
     selectedProject,
     selectedSession,
@@ -239,6 +328,8 @@ function ChatInterface({
     onSessionInactive,
     onSessionProcessing,
     onSessionNotProcessing,
+    wasSessionMarkedProcessingRecently,
+    wasSessionMarkedNotProcessingRecently,
     onReplaceTemporarySession,
     onNavigateToSession,
     onWebSocketReconnect: handleWebSocketReconnect,
@@ -308,7 +399,7 @@ function ChatInterface({
           currentSessionId={currentSessionId}
           provider={provider}
           setProvider={(nextProvider) => setProvider(nextProvider as Provider)}
-          runtimeMode={runtimeMode}
+          runtimeMode={effectiveRuntimeMode}
           setRuntimeMode={setRuntimeMode}
           textareaRef={textareaRef}
           claudeModel={claudeModel}
@@ -347,14 +438,14 @@ function ChatInterface({
         />
 
         <ChatComposer
-          pendingPermissionRequests={pendingPermissionRequests}
+          pendingPermissionRequests={visiblePendingPermissionRequests}
           handlePermissionDecision={handlePermissionDecision}
           handleGrantToolPermission={handleGrantToolPermission}
           claudeStatus={claudeStatus}
           isLoading={isLoading}
           onAbortSession={handleAbortSession}
           provider={provider}
-          runtimeMode={runtimeMode}
+          runtimeMode={effectiveRuntimeMode}
           permissionMode={permissionMode}
           onModeSwitch={cyclePermissionMode}
           thinkingMode={thinkingMode}

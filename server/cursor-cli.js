@@ -3,11 +3,13 @@ import crossSpawn from 'cross-spawn';
 import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
 import { cursorAdapter } from './providers/cursor/adapter.js';
 import { createNormalizedMessage } from './providers/types.js';
+import { CURSOR_MODELS } from '../shared/modelConstants.js';
 
 // Use cross-spawn on Windows for better command execution
 const spawnFunction = process.platform === 'win32' ? crossSpawn : spawn;
 
 let activeCursorProcesses = new Map(); // Track active processes by session ID
+const VALID_CURSOR_MODELS = new Set(CURSOR_MODELS.OPTIONS.map((option) => option.value));
 
 const WORKSPACE_TRUST_PATTERNS = [
   /workspace trust required/i,
@@ -40,6 +42,10 @@ async function spawnCursor(command, options = {}, ws) {
 
     // Build Cursor CLI command
     const baseArgs = [];
+    const requestedModel =
+      typeof model === 'string' && VALID_CURSOR_MODELS.has(model)
+        ? model
+        : CURSOR_MODELS.DEFAULT;
 
     // Build flags allowing both resume and prompt together (reply in existing session)
     // Treat presence of sessionId as intention to resume, regardless of resume flag
@@ -51,9 +57,11 @@ async function spawnCursor(command, options = {}, ws) {
       // Provide a prompt (works for both new and resumed sessions)
       baseArgs.push('-p', command);
 
-      // Add model flag if specified (only meaningful for new sessions; harmless on resume)
-      if (!sessionId && model) {
-        baseArgs.push('--model', model);
+      // Force a known-good default model for new sessions. Cursor's saved
+      // account default can be region-gated (for example Opus 4.6 Thinking),
+      // which makes local bridge tests fail before the session can actually run.
+      if (!sessionId && requestedModel) {
+        baseArgs.push('--model', requestedModel);
       }
 
       // Request streaming JSON when we are providing a prompt
@@ -127,6 +135,7 @@ async function spawnCursor(command, options = {}, ws) {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env } // Inherit all environment variables
       });
+      cursorProcess.writer = ws;
 
       activeCursorProcesses.set(processKey, cursorProcess);
 
@@ -327,9 +336,20 @@ function getActiveCursorSessions() {
   return Array.from(activeCursorProcesses.keys());
 }
 
+function reconnectCursorSessionWriter(sessionId, newRawWs) {
+  const process = activeCursorProcesses.get(sessionId);
+  if (!process?.writer?.updateWebSocket) {
+    return false;
+  }
+
+  process.writer.updateWebSocket(newRawWs);
+  return true;
+}
+
 export {
   spawnCursor,
   abortCursorSession,
   isCursorSessionActive,
-  getActiveCursorSessions
+  getActiveCursorSessions,
+  reconnectCursorSessionWriter
 };

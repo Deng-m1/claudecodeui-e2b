@@ -1,22 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type React from 'react';
 import type { TFunction } from 'i18next';
 import { api } from '../../../utils/api';
-import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
+import type { Project, ProjectSession, RuntimeMode, SessionProvider } from '../../../types/app';
 import type {
   AdditionalSessionsByProject,
   DeleteProjectConfirmation,
   LoadingSessionsByProject,
   ProjectSortOrder,
   SessionDeleteConfirmation,
+  SidebarSessionProviderFilter,
   SessionWithProvider,
 } from '../types/types';
 import {
   filterProjects,
   getAllSessions,
+  getProjectSessionMetaForProvider,
   loadStarredProjects,
   persistStarredProjects,
   readProjectSortOrder,
+  resolveProjectLoadMoreProvider,
   sortProjects,
 } from '../utils/utils';
 
@@ -75,11 +77,47 @@ type UseSidebarControllerArgs = {
   sidebarVisible: boolean;
 };
 
+const setsAreEqual = (left: Set<string>, right: Set<string>) => {
+  if (left.size !== right.size) {
+    return false;
+  }
+
+  for (const value of left) {
+    if (!right.has(value)) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
+const filterProjectRecord = <T,>(record: Record<string, T>, validProjectNames: Set<string>) => {
+  const nextEntries = Object.entries(record).filter(([projectName]) => validProjectNames.has(projectName));
+  if (nextEntries.length === Object.keys(record).length) {
+    return record;
+  }
+
+  return Object.fromEntries(nextEntries) as Record<string, T>;
+};
+
+const readSessionProviderFilter = (): SidebarSessionProviderFilter => {
+  try {
+    const stored = localStorage.getItem('sidebar-session-provider-filter');
+    if (stored === 'claude' || stored === 'cursor' || stored === 'codex' || stored === 'gemini') {
+      return stored;
+    }
+  } catch {
+    // localStorage unavailable
+  }
+
+  return 'all';
+};
+
 export function useSidebarController({
   projects,
   selectedProject,
   selectedSession,
-  isLoading,
+  isLoading: _isLoading,
   isMobile,
   t,
   onRefresh,
@@ -101,10 +139,13 @@ export function useSidebarController({
   const [currentTime, setCurrentTime] = useState(new Date());
   const [projectSortOrder, setProjectSortOrder] = useState<ProjectSortOrder>('name');
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [projectHasMoreOverrides, setProjectHasMoreOverrides] = useState<Record<string, boolean>>({});
+  const [projectHasMoreOverrides, setProjectHasMoreOverrides] = useState<
+    Record<string, Partial<Record<Exclude<SessionProvider, 'e2b'>, boolean>>>
+  >({});
   const [editingSession, setEditingSession] = useState<string | null>(null);
   const [editingSessionName, setEditingSessionName] = useState('');
   const [searchFilter, setSearchFilter] = useState('');
+  const [sessionProviderFilter, setSessionProviderFilter] = useState<SidebarSessionProviderFilter>(readSessionProviderFilter);
   const [deletingProjects, setDeletingProjects] = useState<Set<string>>(new Set());
   const [deleteConfirmation, setDeleteConfirmation] = useState<DeleteProjectConfirmation | null>(null);
   const [sessionDeleteConfirmation, setSessionDeleteConfirmation] = useState<SessionDeleteConfirmation | null>(null);
@@ -129,9 +170,42 @@ export function useSidebarController({
   }, []);
 
   useEffect(() => {
-    setAdditionalSessions({});
-    setInitialSessionsLoaded(new Set());
-    setProjectHasMoreOverrides({});
+    try {
+      localStorage.setItem('sidebar-session-provider-filter', sessionProviderFilter);
+    } catch {
+      // localStorage unavailable
+    }
+  }, [sessionProviderFilter]);
+
+  useEffect(() => {
+    const projectNames = new Set(projects.map((project) => project.name));
+
+    setExpandedProjects((prev) => {
+      const next = new Set([...prev].filter((projectName) => projectNames.has(projectName)));
+      return setsAreEqual(prev, next) ? prev : next;
+    });
+
+    setAdditionalSessions((prev) => filterProjectRecord(prev, projectNames));
+    setProjectHasMoreOverrides((prev) => filterProjectRecord(prev, projectNames));
+    setLoadingSessions((prev) => filterProjectRecord(prev, projectNames));
+
+    setInitialSessionsLoaded((prev) => {
+      const next = new Set([...prev].filter((projectName) => projectNames.has(projectName)));
+
+      for (const project of projects) {
+        if (
+          Array.isArray(project.sessions) ||
+          Array.isArray(project.cursorSessions) ||
+          Array.isArray(project.codexSessions) ||
+          Array.isArray(project.geminiSessions) ||
+          Array.isArray(project.e2bSessions)
+        ) {
+          next.add(project.name);
+        }
+      }
+
+      return setsAreEqual(prev, next) ? prev : next;
+    });
   }, [projects]);
 
   useEffect(() => {
@@ -146,18 +220,6 @@ export function useSidebarController({
       });
     }
   }, [selectedSession, selectedProject]);
-
-  useEffect(() => {
-    if (projects.length > 0 && !isLoading) {
-      const loadedProjects = new Set<string>();
-      projects.forEach((project) => {
-        if (project.sessions && project.sessions.length >= 0) {
-          loadedProjects.add(project.name);
-        }
-      });
-      setInitialSessionsLoaded(loadedProjects);
-    }
-  }, [projects, isLoading]);
 
   useEffect(() => {
     const loadSortOrder = () => {
@@ -281,27 +343,16 @@ export function useSidebarController({
     };
   }, [searchFilter, searchMode]);
 
-  const handleTouchClick = useCallback(
-    (callback: () => void) =>
-      (event: React.TouchEvent<HTMLElement>) => {
-        const target = event.target as HTMLElement;
-        if (target.closest('.overflow-y-auto') || target.closest('[data-scroll-container]')) {
-          return;
-        }
-
-        event.preventDefault();
-        event.stopPropagation();
-        callback();
-      },
-    [],
-  );
-
   const toggleProject = useCallback((projectName: string) => {
     setExpandedProjects((prev) => {
-      const next = new Set<string>();
-      if (!prev.has(projectName)) {
+      const next = new Set(prev);
+
+      if (next.has(projectName)) {
+        next.delete(projectName);
+      } else {
         next.add(projectName);
       }
+
       return next;
     });
   }, []);
@@ -345,9 +396,31 @@ export function useSidebarController({
           return project;
         }
 
+        const nextByProvider = {
+          ...(project.sessionMeta?.byProvider || {}),
+          ...Object.fromEntries(
+            Object.entries(hasMoreOverride).map(([provider, hasMore]) => [
+              provider,
+              {
+                ...(project.sessionMeta?.byProvider?.[provider as Exclude<SessionProvider, 'e2b'>] || {}),
+                hasMore:
+                  project.sessionMeta?.byProvider?.[provider as Exclude<SessionProvider, 'e2b'>]?.hasMore === true
+                    ? true
+                    : hasMore,
+              },
+            ]),
+          ),
+        };
+
         return {
           ...project,
-          sessionMeta: { ...project.sessionMeta, hasMore: hasMoreOverride },
+          sessionMeta: {
+            ...project.sessionMeta,
+            hasMore:
+              project.sessionMeta?.hasMore === true ||
+              Object.values(nextByProvider).some((meta) => meta?.hasMore === true),
+            byProvider: nextByProvider,
+          },
         };
       }),
     [projectHasMoreOverrides, projects],
@@ -402,8 +475,9 @@ export function useSidebarController({
       sessionId: string,
       sessionTitle: string,
       provider: SessionDeleteConfirmation['provider'] = 'claude',
+      runtime: RuntimeMode = 'local',
     ) => {
-      setSessionDeleteConfirmation({ projectName, sessionId, sessionTitle, provider });
+      setSessionDeleteConfirmation({ projectName, sessionId, sessionTitle, provider, runtime });
     },
     [],
   );
@@ -418,7 +492,9 @@ export function useSidebarController({
 
     try {
       let response;
-      if (provider === 'codex') {
+      if (sessionDeleteConfirmation.runtime === 'e2b') {
+        response = await api.deleteE2BSession(sessionId);
+      } else if (provider === 'codex') {
         response = await api.deleteCodexSession(sessionId);
       } else if (provider === 'gemini') {
         response = await api.deleteGeminiSession(sessionId);
@@ -486,19 +562,55 @@ export function useSidebarController({
 
   const loadMoreSessions = useCallback(
     async (project: Project) => {
-      const hasMoreOverride = projectHasMoreOverrides[project.name];
-      const canLoadMore =
-        hasMoreOverride !== undefined ? hasMoreOverride : project.sessionMeta?.hasMore === true;
-      if (!canLoadMore || loadingSessions[project.name]) {
+      const providerOverrides = Object.fromEntries(
+        Object.entries(projectHasMoreOverrides[project.name] || {}).map(([provider, hasMore]) => [
+          provider,
+          {
+            ...(project.sessionMeta?.byProvider?.[provider as Exclude<SessionProvider, 'e2b'>] || {}),
+            hasMore:
+              project.sessionMeta?.byProvider?.[provider as Exclude<SessionProvider, 'e2b'>]?.hasMore === true
+                ? true
+                : hasMore,
+          },
+        ]),
+      );
+
+      const activeProvider = resolveProjectLoadMoreProvider(
+        {
+          ...project,
+          sessionMeta: {
+            ...project.sessionMeta,
+            byProvider: {
+              ...(project.sessionMeta?.byProvider || {}),
+              ...providerOverrides,
+            },
+          },
+        },
+        sessionProviderFilter,
+      );
+
+      if (!activeProvider || loadingSessions[project.name]) {
+        return;
+      }
+
+      const providerMeta = getProjectSessionMetaForProvider(project, activeProvider);
+      const hasMoreOverride = projectHasMoreOverrides[project.name]?.[activeProvider];
+      const canLoadMore = providerMeta.hasMore || hasMoreOverride === true;
+
+      if (!canLoadMore) {
         return;
       }
 
       setLoadingSessions((prev) => ({ ...prev, [project.name]: true }));
 
       try {
-        const currentSessionCount =
-          (project.sessions?.length || 0) + (additionalSessions[project.name]?.length || 0);
-        const response = await api.sessions(project.name, 5, currentSessionCount);
+        const currentSessionCount = getProjectSessions(project).filter(
+          (session) => session.__provider === activeProvider,
+        ).length;
+        const response = await api.sessions(project.name, 5, currentSessionCount, {
+          provider: activeProvider,
+          projectPath: project.fullPath || project.path || project.cloud?.workspacePath || '',
+        });
 
         if (!response.ok) {
           return;
@@ -511,12 +623,23 @@ export function useSidebarController({
 
         setAdditionalSessions((prev) => ({
           ...prev,
-          [project.name]: [...(prev[project.name] || []), ...(result.sessions || [])],
+          [project.name]: {
+            ...(prev[project.name] || {}),
+            [activeProvider]: [
+              ...((prev[project.name] || {})[activeProvider] || []),
+              ...(result.sessions || []),
+            ],
+          },
         }));
 
         if (result.hasMore === false) {
-          // Keep hasMore state in local hook state instead of mutating the project prop object.
-          setProjectHasMoreOverrides((prev) => ({ ...prev, [project.name]: false }));
+          setProjectHasMoreOverrides((prev) => ({
+            ...prev,
+            [project.name]: {
+              ...(prev[project.name] || {}),
+              [activeProvider]: false,
+            },
+          }));
         }
       } catch (error) {
         console.error('Error loading more sessions:', error);
@@ -524,7 +647,7 @@ export function useSidebarController({
         setLoadingSessions((prev) => ({ ...prev, [project.name]: false }));
       }
     },
-    [additionalSessions, loadingSessions, projectHasMoreOverrides],
+    [getProjectSessions, loadingSessions, projectHasMoreOverrides, sessionProviderFilter],
   );
 
   const handleProjectSelect = useCallback(
@@ -545,7 +668,13 @@ export function useSidebarController({
   }, [onRefresh]);
 
   const updateSessionSummary = useCallback(
-    async (_projectName: string, sessionId: string, summary: string, provider: SessionProvider) => {
+    async (
+      _projectName: string,
+      sessionId: string,
+      summary: string,
+      provider: SessionProvider,
+      runtime: RuntimeMode = 'local',
+    ) => {
       const trimmed = summary.trim();
       if (!trimmed) {
         setEditingSession(null);
@@ -553,7 +682,7 @@ export function useSidebarController({
         return;
       }
       try {
-        const response = await api.renameSession(sessionId, trimmed, provider);
+        const response = await api.renameSession(sessionId, trimmed, runtime === 'e2b' ? 'e2b' : provider);
         if (response.ok) {
           await onRefresh();
         } else {
@@ -594,6 +723,7 @@ export function useSidebarController({
     editingSession,
     editingSessionName,
     searchFilter,
+    sessionProviderFilter,
     deletingProjects,
     deleteConfirmation,
     sessionDeleteConfirmation,
@@ -624,6 +754,7 @@ export function useSidebarController({
     setEditingSessionName,
     searchMode,
     setSearchMode,
+    setSessionProviderFilter,
     conversationResults,
     isSearching,
     searchProgress,

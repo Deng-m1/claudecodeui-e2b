@@ -110,6 +110,15 @@ const runMigrations = () => {
     `);
 
     db.exec(`
+      CREATE TABLE IF NOT EXISTS user_claude_settings (
+        user_id INTEGER PRIMARY KEY,
+        settings_json TEXT NOT NULL,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+
+    db.exec(`
       CREATE TABLE IF NOT EXISTS vapid_keys (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         public_key TEXT NOT NULL,
@@ -148,12 +157,115 @@ const runMigrations = () => {
     )`);
     db.exec('CREATE INDEX IF NOT EXISTS idx_session_names_lookup ON session_names(session_id, provider)');
 
+    db.exec(`CREATE TABLE IF NOT EXISTS e2b_sandboxes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      sandbox_id TEXT NOT NULL,
+      repo_url TEXT,
+      branch TEXT,
+      workspace_path TEXT,
+      status TEXT DEFAULT 'running',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_activity DATETIME DEFAULT CURRENT_TIMESTAMP,
+      metadata_json TEXT,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )`);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_e2b_sandboxes_user_id ON e2b_sandboxes(user_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_e2b_sandboxes_status ON e2b_sandboxes(status)');
+
+    db.exec(`CREATE TABLE IF NOT EXISTS e2b_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      sandbox_id TEXT NOT NULL,
+      session_id TEXT NOT NULL UNIQUE,
+      agent TEXT NOT NULL,
+      model TEXT,
+      summary TEXT,
+      status TEXT DEFAULT \'active\',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_activity DATETIME DEFAULT CURRENT_TIMESTAMP,
+      metadata_json TEXT,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )`);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_e2b_sessions_user_id ON e2b_sessions(user_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_e2b_sessions_sandbox_id ON e2b_sessions(sandbox_id)');
+
+    db.exec(`CREATE TABLE IF NOT EXISTS e2b_session_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      timestamp TEXT,
+      message_json TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(session_id, message_id)
+    )`);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_e2b_session_messages_session_id ON e2b_session_messages(session_id, id)');
+
+    db.exec(`CREATE TABLE IF NOT EXISTS auth_profiles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      provider TEXT NOT NULL,
+      profile_name TEXT NOT NULL,
+      profile_type TEXT NOT NULL DEFAULT 'bundle',
+      source TEXT,
+      email TEXT,
+      summary TEXT,
+      payload_json TEXT NOT NULL,
+      metadata_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )`);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_auth_profiles_user_id ON auth_profiles(user_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_auth_profiles_provider ON auth_profiles(provider)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_auth_profiles_user_provider ON auth_profiles(user_id, provider)');
+
     console.log('Database migrations completed successfully');
   } catch (error) {
     console.error('Error running migrations:', error.message);
     throw error;
   }
 };
+
+const SQLITE_UTC_DATETIME_RE = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+
+function normalizeSqliteUtcTimestamp(value) {
+  if (typeof value !== 'string') {
+    return value;
+  }
+
+  const trimmed = value.trim();
+  if (!SQLITE_UTC_DATETIME_RE.test(trimmed)) {
+    return value;
+  }
+
+  return `${trimmed.replace(' ', 'T')}Z`;
+}
+
+function normalizeE2BRowTimestamps(row) {
+  if (!row || typeof row !== 'object') {
+    return row;
+  }
+
+  return {
+    ...row,
+    created_at: normalizeSqliteUtcTimestamp(row.created_at),
+    updated_at: normalizeSqliteUtcTimestamp(row.updated_at),
+    last_activity: normalizeSqliteUtcTimestamp(row.last_activity),
+  };
+}
+
+function normalizeE2BMessageRow(row) {
+  if (!row || typeof row !== 'object') {
+    return row;
+  }
+
+  return {
+    ...row,
+    created_at: normalizeSqliteUtcTimestamp(row.created_at),
+  };
+}
 
 // Initialize database with schema
 const initializeDatabase = async () => {
@@ -417,6 +529,38 @@ const DEFAULT_NOTIFICATION_PREFERENCES = {
   }
 };
 
+const DEFAULT_CLAUDE_PERMISSION_SETTINGS = {
+  allowedTools: [],
+  disallowedTools: [],
+  skipPermissions: false,
+};
+
+const normalizeClaudePermissionSettings = (value) => {
+  const source = value && typeof value === 'object' ? value : {};
+  const normalizeList = (items) => {
+    if (!Array.isArray(items)) {
+      return [];
+    }
+
+    return [...new Set(
+      items
+        .filter((item) => typeof item === 'string')
+        .map((item) => item.trim())
+        .filter(Boolean)
+    )];
+  };
+
+  const allowedTools = normalizeList(source.allowedTools);
+  const disallowedTools = normalizeList(source.disallowedTools)
+    .filter((tool) => !allowedTools.includes(tool));
+
+  return {
+    allowedTools,
+    disallowedTools,
+    skipPermissions: source.skipPermissions === true,
+  };
+};
+
 const normalizeNotificationPreferences = (value) => {
   const source = value && typeof value === 'object' ? value : {};
 
@@ -465,6 +609,48 @@ const notificationPreferencesDb = {
          VALUES (?, ?, CURRENT_TIMESTAMP)
          ON CONFLICT(user_id) DO UPDATE SET
            preferences_json = excluded.preferences_json,
+           updated_at = CURRENT_TIMESTAMP`
+      ).run(userId, JSON.stringify(normalized));
+      return normalized;
+    } catch (err) {
+      throw err;
+    }
+  }
+};
+
+const userClaudeSettingsDb = {
+  getSettings: (userId) => {
+    try {
+      const row = db.prepare('SELECT settings_json FROM user_claude_settings WHERE user_id = ?').get(userId);
+      if (!row) {
+        const defaults = normalizeClaudePermissionSettings(DEFAULT_CLAUDE_PERMISSION_SETTINGS);
+        db.prepare(
+          'INSERT INTO user_claude_settings (user_id, settings_json, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)'
+        ).run(userId, JSON.stringify(defaults));
+        return defaults;
+      }
+
+      let parsed;
+      try {
+        parsed = JSON.parse(row.settings_json);
+      } catch {
+        parsed = DEFAULT_CLAUDE_PERMISSION_SETTINGS;
+      }
+
+      return normalizeClaudePermissionSettings(parsed);
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  updateSettings: (userId, settings) => {
+    try {
+      const normalized = normalizeClaudePermissionSettings(settings);
+      db.prepare(
+        `INSERT INTO user_claude_settings (user_id, settings_json, updated_at)
+         VALUES (?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(user_id) DO UPDATE SET
+           settings_json = excluded.settings_json,
            updated_at = CURRENT_TIMESTAMP`
       ).run(userId, JSON.stringify(normalized));
       return normalized;
@@ -615,6 +801,123 @@ const githubTokensDb = {
   }
 };
 
+const authProfilesDb = {
+  create: (
+    userId,
+    {
+      provider,
+      profileName,
+      profileType = 'bundle',
+      source = null,
+      email = null,
+      summary = null,
+      payload,
+      metadata = null,
+    } = {},
+  ) => {
+    const result = db.prepare(`
+      INSERT INTO auth_profiles (
+        user_id,
+        provider,
+        profile_name,
+        profile_type,
+        source,
+        email,
+        summary,
+        payload_json,
+        metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      userId,
+      provider,
+      profileName,
+      profileType,
+      source,
+      email,
+      summary,
+      JSON.stringify(payload || {}),
+      metadata ? JSON.stringify(metadata) : null,
+    );
+
+    return Number(result.lastInsertRowid);
+  },
+
+  getByUser: (userId, provider = null) => {
+    if (provider) {
+      return db.prepare(`
+        SELECT *
+        FROM auth_profiles
+        WHERE user_id = ? AND provider = ?
+        ORDER BY updated_at DESC, created_at DESC
+      `).all(userId, provider);
+    }
+
+    return db.prepare(`
+      SELECT *
+      FROM auth_profiles
+      WHERE user_id = ?
+      ORDER BY provider ASC, updated_at DESC, created_at DESC
+    `).all(userId);
+  },
+
+  getById: (userId, id) => {
+    return db.prepare(`
+      SELECT *
+      FROM auth_profiles
+      WHERE user_id = ? AND id = ?
+    `).get(userId, id);
+  },
+
+  updateName: (userId, id, profileName) => {
+    const result = db.prepare(`
+      UPDATE auth_profiles
+      SET profile_name = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE user_id = ? AND id = ?
+    `).run(profileName, userId, id);
+
+    return result.changes > 0;
+  },
+
+  updatePayload: (userId, id, { payload, email, summary, metadata } = {}) => {
+    const assignments = ['payload_json = ?', 'updated_at = CURRENT_TIMESTAMP'];
+    const params = [JSON.stringify(payload || {})];
+
+    if (email !== undefined) {
+      assignments.push('email = ?');
+      params.push(email);
+    }
+
+    if (summary !== undefined) {
+      assignments.push('summary = ?');
+      params.push(summary);
+    }
+
+    if (metadata !== undefined) {
+      assignments.push('metadata_json = ?');
+      params.push(metadata ? JSON.stringify(metadata) : null);
+    }
+
+    params.push(userId, id);
+
+    const result = db.prepare(`
+      UPDATE auth_profiles
+      SET ${assignments.join(', ')}
+      WHERE user_id = ? AND id = ?
+    `).run(...params);
+
+    return result.changes > 0;
+  },
+
+  delete: (userId, id) => {
+    const result = db.prepare(`
+      DELETE FROM auth_profiles
+      WHERE user_id = ? AND id = ?
+    `).run(userId, id);
+
+    return result.changes > 0;
+  },
+};
+
 // E2B sandbox persistence operations
 const e2bSandboxDb = {
   create: (userId, sandboxId, { repoUrl = null, branch = null, workspacePath = null, metadata = null } = {}) => {
@@ -629,16 +932,32 @@ const e2bSandboxDb = {
     db.prepare('UPDATE e2b_sandboxes SET status = ?, last_activity = CURRENT_TIMESTAMP WHERE sandbox_id = ?').run(status, sandboxId);
   },
 
+  updateMetadata: (sandboxId, metadata = null) => {
+    db.prepare(`
+      UPDATE e2b_sandboxes
+      SET metadata_json = ?, last_activity = CURRENT_TIMESTAMP
+      WHERE sandbox_id = ?
+    `).run(metadata ? JSON.stringify(metadata) : null, sandboxId);
+  },
+
   getByUser: (userId) => {
-    return db.prepare('SELECT * FROM e2b_sandboxes WHERE user_id = ? ORDER BY last_activity DESC').all(userId);
+    return db
+      .prepare('SELECT * FROM e2b_sandboxes WHERE user_id = ? ORDER BY last_activity DESC')
+      .all(userId)
+      .map(normalizeE2BRowTimestamps);
   },
 
   getActive: (userId) => {
-    return db.prepare("SELECT * FROM e2b_sandboxes WHERE user_id = ? AND status IN ('running', 'paused') ORDER BY last_activity DESC").all(userId);
+    return db
+      .prepare("SELECT * FROM e2b_sandboxes WHERE user_id = ? AND status IN ('running', 'paused') ORDER BY last_activity DESC")
+      .all(userId)
+      .map(normalizeE2BRowTimestamps);
   },
 
   getBySandboxId: (sandboxId) => {
-    return db.prepare('SELECT * FROM e2b_sandboxes WHERE sandbox_id = ?').get(sandboxId);
+    return normalizeE2BRowTimestamps(
+      db.prepare('SELECT * FROM e2b_sandboxes WHERE sandbox_id = ?').get(sandboxId),
+    );
   },
 
   delete: (id) => {
@@ -650,6 +969,176 @@ const e2bSandboxDb = {
   },
 };
 
+const E2B_SESSION_SELECT_WITH_MESSAGE_COUNTS = `
+      SELECT
+        e2b_sessions.*,
+        COALESCE(message_counts.message_count, 0) AS message_count
+      FROM e2b_sessions
+      LEFT JOIN (
+        SELECT session_id, COUNT(*) AS message_count
+        FROM e2b_session_messages
+        GROUP BY session_id
+      ) AS message_counts
+        ON message_counts.session_id = e2b_sessions.session_id
+    `;
+
+const e2bSessionDb = {
+  upsert: (
+    userId,
+    sessionId,
+    {
+      sandboxId,
+      agent,
+      model = null,
+      summary = null,
+      status = 'active',
+      metadata = null,
+    } = {},
+  ) => {
+    db.prepare(`
+      INSERT INTO e2b_sessions (
+        user_id,
+        sandbox_id,
+        session_id,
+        agent,
+        model,
+        summary,
+        status,
+        metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET
+        user_id = excluded.user_id,
+        sandbox_id = COALESCE(excluded.sandbox_id, e2b_sessions.sandbox_id),
+        agent = COALESCE(excluded.agent, e2b_sessions.agent),
+        model = COALESCE(excluded.model, e2b_sessions.model),
+        summary = COALESCE(excluded.summary, e2b_sessions.summary),
+        status = COALESCE(excluded.status, e2b_sessions.status),
+        metadata_json = COALESCE(excluded.metadata_json, e2b_sessions.metadata_json),
+        last_activity = CURRENT_TIMESTAMP
+    `).run(
+      userId,
+      sandboxId,
+      sessionId,
+      agent,
+      model,
+      summary,
+      status,
+      metadata ? JSON.stringify(metadata) : null,
+    );
+  },
+
+  touch: (
+    sessionId,
+    { summary = null, model = null, status = null, metadata = null } = {},
+  ) => {
+    db.prepare(`
+      UPDATE e2b_sessions
+      SET
+        summary = COALESCE(?, summary),
+        model = COALESCE(?, model),
+        status = COALESCE(?, status),
+        metadata_json = COALESCE(?, metadata_json),
+        last_activity = CURRENT_TIMESTAMP
+      WHERE session_id = ?
+    `).run(
+      summary,
+      model,
+      status,
+      metadata ? JSON.stringify(metadata) : null,
+      sessionId,
+    );
+  },
+
+  getByUser: (userId) => {
+    return db.prepare(`
+      ${E2B_SESSION_SELECT_WITH_MESSAGE_COUNTS}
+      WHERE e2b_sessions.user_id = ?
+      ORDER BY e2b_sessions.last_activity DESC
+    `).all(userId).map(normalizeE2BRowTimestamps);
+  },
+
+  getBySandbox: (sandboxId) => {
+    return db.prepare(`
+      ${E2B_SESSION_SELECT_WITH_MESSAGE_COUNTS}
+      WHERE e2b_sessions.sandbox_id = ?
+      ORDER BY e2b_sessions.last_activity DESC
+    `).all(sandboxId).map(normalizeE2BRowTimestamps);
+  },
+
+  getBySessionId: (sessionId) => {
+    return normalizeE2BRowTimestamps(
+      db.prepare(`
+        ${E2B_SESSION_SELECT_WITH_MESSAGE_COUNTS}
+        WHERE e2b_sessions.session_id = ?
+      `).get(sessionId),
+    );
+  },
+
+  updateStatus: (sessionId, status) => {
+    db.prepare(`
+      UPDATE e2b_sessions
+      SET status = ?, last_activity = CURRENT_TIMESTAMP
+      WHERE session_id = ?
+    `).run(status, sessionId);
+  },
+
+  delete: (sessionId) => {
+    db.prepare('DELETE FROM e2b_sessions WHERE session_id = ?').run(sessionId);
+  },
+
+  deleteBySandboxId: (sandboxId) => {
+    db.prepare('DELETE FROM e2b_sessions WHERE sandbox_id = ?').run(sandboxId);
+  },
+};
+
+const e2bSessionMessagesDb = {
+  append: (sessionId, message) => {
+    if (!sessionId || !message?.id || !message?.kind) {
+      return;
+    }
+
+    db.prepare(`
+      INSERT OR IGNORE INTO e2b_session_messages (
+        session_id,
+        message_id,
+        kind,
+        timestamp,
+        message_json
+      ) VALUES (?, ?, ?, ?, ?)
+    `).run(
+      sessionId,
+      String(message.id),
+      String(message.kind),
+      typeof message.timestamp === 'string' ? message.timestamp : null,
+      JSON.stringify(message),
+    );
+  },
+
+  getBySessionId: (sessionId) => {
+    return db.prepare(`
+      SELECT *
+      FROM e2b_session_messages
+      WHERE session_id = ?
+      ORDER BY id ASC
+    `).all(sessionId).map(normalizeE2BMessageRow);
+  },
+
+  deleteBySessionId: (sessionId) => {
+    db.prepare('DELETE FROM e2b_session_messages WHERE session_id = ?').run(sessionId);
+  },
+
+  deleteBySandboxId: (sandboxId) => {
+    db.prepare(`
+      DELETE FROM e2b_session_messages
+      WHERE session_id IN (
+        SELECT session_id
+        FROM e2b_sessions
+        WHERE sandbox_id = ?
+      )
+    `).run(sandboxId);
+  },
+};
+
 export {
   db,
   initializeDatabase,
@@ -657,10 +1146,14 @@ export {
   apiKeysDb,
   credentialsDb,
   notificationPreferencesDb,
+  userClaudeSettingsDb,
   pushSubscriptionsDb,
   sessionNamesDb,
   applyCustomSessionNames,
   appConfigDb,
   githubTokensDb,
+  authProfilesDb,
   e2bSandboxDb,
+  e2bSessionDb,
+  e2bSessionMessagesDb,
 };

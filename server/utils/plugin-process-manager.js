@@ -6,6 +6,11 @@ import { scanPlugins, getPluginsConfig, getPluginDir } from './plugin-loader.js'
 const runningPlugins = new Map();
 // Map<pluginName, Promise<port>> — in-flight start operations
 const startingPlugins = new Map();
+const BUILTIN_PLUGIN_SERVERS = new Set(['web-terminal']);
+
+export function isBuiltinPluginServer(name) {
+  return BUILTIN_PLUGIN_SERVERS.has(name);
+}
 
 /**
  * Start a plugin's server subprocess.
@@ -13,6 +18,10 @@ const startingPlugins = new Map();
  * to stdout within 10 seconds.
  */
 export function startPluginServer(name, pluginDir, serverEntry) {
+  if (isBuiltinPluginServer(name)) {
+    return Promise.resolve(null);
+  }
+
   if (runningPlugins.has(name)) {
     return Promise.resolve(runningPlugins.get(name).port);
   }
@@ -109,6 +118,10 @@ export function startPluginServer(name, pluginDir, serverEntry) {
  * Returns a Promise that resolves when the process has fully exited.
  */
 export function stopPluginServer(name) {
+  if (isBuiltinPluginServer(name)) {
+    return Promise.resolve();
+  }
+
   const entry = runningPlugins.get(name);
   if (!entry) return Promise.resolve();
 
@@ -171,6 +184,10 @@ export async function startEnabledPluginServers() {
   for (const plugin of plugins) {
     if (!plugin.server) continue;
     if (config[plugin.name]?.enabled === false) continue;
+    if (isBuiltinPluginServer(plugin.name)) {
+      console.log(`[Plugins] Using built-in server transport for "${plugin.name}"`);
+      continue;
+    }
 
     const pluginDir = getPluginDir(plugin.name);
     if (!pluginDir) continue;

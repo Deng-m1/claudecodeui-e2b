@@ -34,6 +34,7 @@ export default function AuthInputField({
       </label>
       <input
         id={id}
+        data-testid={`auth-input-${id}`}
         type={type}
         name={name ?? id}
         autoComplete={autoComplete}

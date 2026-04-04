@@ -1,9 +1,12 @@
+import type { ReactNode } from 'react';
+
 type ShellHeaderProps = {
   isConnected: boolean;
   isInitialized: boolean;
   isRestarting: boolean;
   hasSession: boolean;
-  sessionDisplayNameShort: string | null;
+  contextLabel: string | null;
+  commandMenuSlot?: ReactNode;
   onDisconnect: () => void;
   onRestart: () => void;
   statusNewSessionText: string;
@@ -21,7 +24,8 @@ export default function ShellHeader({
   isInitialized,
   isRestarting,
   hasSession,
-  sessionDisplayNameShort,
+  contextLabel,
+  commandMenuSlot = null,
   onDisconnect,
   onRestart,
   statusNewSessionText,
@@ -39,11 +43,13 @@ export default function ShellHeader({
         <div className="flex items-center space-x-2">
           <div className={`h-2 w-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
 
-          {hasSession && sessionDisplayNameShort && (
-            <span className="text-xs text-blue-300">({sessionDisplayNameShort}...)</span>
+          {contextLabel && (
+            <span className={`text-xs ${hasSession ? 'text-blue-300' : 'text-gray-300'}`}>
+              {hasSession ? `(${contextLabel}...)` : contextLabel}
+            </span>
           )}
 
-          {!hasSession && <span className="text-xs text-gray-400">{statusNewSessionText}</span>}
+          {!hasSession && !contextLabel && <span className="text-xs text-gray-400">{statusNewSessionText}</span>}
 
           {!isInitialized && <span className="text-xs text-yellow-400">{statusInitializingText}</span>}
 
@@ -51,6 +57,8 @@ export default function ShellHeader({
         </div>
 
         <div className="flex items-center space-x-3">
+          {commandMenuSlot}
+
           {isConnected && (
             <button
               onClick={onDisconnect}

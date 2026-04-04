@@ -1,5 +1,7 @@
 import express from 'express';
-import { apiKeysDb, credentialsDb, notificationPreferencesDb, pushSubscriptionsDb } from '../database/db.js';
+import { apiKeysDb, credentialsDb, notificationPreferencesDb, pushSubscriptionsDb, userClaudeSettingsDb } from '../database/db.js';
+import { writeClaudePermissionSettingsToHost } from '../providers/e2b/auth-sync.js';
+import { syncClaudeSettingsToActiveSandboxes } from '../providers/e2b/session-bridge.js';
 import { getPublicKey } from '../services/vapid-keys.js';
 import { createNotificationEvent, notifyUserIfEnabled } from '../services/notification-orchestrator.js';
 
@@ -174,6 +176,47 @@ router.patch('/credentials/:credentialId/toggle', async (req, res) => {
   } catch (error) {
     console.error('Error toggling credential:', error);
     res.status(500).json({ error: 'Failed to toggle credential' });
+  }
+});
+
+// ===============================
+// Claude Permission Settings
+// ===============================
+
+router.get('/claude-permissions', async (req, res) => {
+  try {
+    const settings = userClaudeSettingsDb.getSettings(req.user.id);
+    res.json({ success: true, settings });
+  } catch (error) {
+    console.error('Error fetching Claude permission settings:', error);
+    res.status(500).json({ error: 'Failed to fetch Claude permission settings' });
+  }
+});
+
+router.put('/claude-permissions', async (req, res) => {
+  try {
+    const settings = userClaudeSettingsDb.updateSettings(req.user.id, req.body || {});
+    const warnings = [];
+
+    try {
+      await writeClaudePermissionSettingsToHost(settings);
+    } catch (error) {
+      console.error('Error writing host Claude settings:', error);
+      warnings.push('Failed to update host Claude settings file');
+    }
+
+    let syncResult = { total: 0, synced: 0, failed: [] };
+    try {
+      syncResult = await syncClaudeSettingsToActiveSandboxes(req.user.id);
+    } catch (error) {
+      console.error('Error syncing Claude settings to active sandboxes:', error);
+      warnings.push('Failed to sync Claude settings to one or more active sandboxes');
+    }
+
+    res.json({ success: true, settings, syncResult, warnings });
+  } catch (error) {
+    console.error('Error saving Claude permission settings:', error);
+    res.status(500).json({ error: 'Failed to save Claude permission settings' });
   }
 });
 

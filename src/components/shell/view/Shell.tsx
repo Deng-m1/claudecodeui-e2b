@@ -14,6 +14,7 @@ import { useShellRuntime } from '../hooks/useShellRuntime';
 import { sendSocketMessage } from '../utils/socket';
 import { getSessionDisplayName } from '../utils/auth';
 import ShellConnectionOverlay from './subcomponents/ShellConnectionOverlay';
+import TerminalCommandMenu from './subcomponents/TerminalCommandMenu';
 import ShellEmptyState from './subcomponents/ShellEmptyState';
 import ShellHeader from './subcomponents/ShellHeader';
 import ShellMinimalView from './subcomponents/ShellMinimalView';
@@ -68,6 +69,7 @@ export default function Shell({
     isPlainShell,
     minimal,
     autoConnect,
+    isActive,
     isRestarting,
     onProcessComplete,
     onOutputRef,
@@ -180,14 +182,19 @@ export default function Shell({
   );
 
   const sessionDisplayName = useMemo(() => getSessionDisplayName(selectedSession), [selectedSession]);
-  const sessionDisplayNameShort = useMemo(
-    () => (sessionDisplayName ? sessionDisplayName.slice(0, 30) : null),
-    [sessionDisplayName],
-  );
+  const headerContextLabel = useMemo(() => {
+    if (sessionDisplayName) {
+      return sessionDisplayName.slice(0, 30);
+    }
+
+    return selectedProject?.displayName || null;
+  }, [selectedProject?.displayName, sessionDisplayName]);
   const sessionDisplayNameLong = useMemo(
     () => (sessionDisplayName ? sessionDisplayName.slice(0, 50) : null),
     [sessionDisplayName],
   );
+  const isSessionTerminal = Boolean(selectedSession) && !isPlainShell;
+  const sessionTerminalLabel = sessionDisplayNameLong || selectedProject?.displayName || selectedProject?.name || '';
 
   const handleRestartShell = useCallback(() => {
     setIsRestarting(true);
@@ -232,8 +239,8 @@ export default function Shell({
         command: initialCommand || t('shell.defaultCommand'),
         projectName: selectedProject.displayName,
       })
-    : selectedSession
-      ? t('shell.resumeSession', { displayName: sessionDisplayNameLong })
+    : isSessionTerminal
+      ? t('shell.attachSession', { displayName: sessionTerminalLabel })
       : t('shell.startSession');
 
   const connectingDescription = isPlainShell
@@ -241,7 +248,13 @@ export default function Shell({
         command: initialCommand || t('shell.defaultCommand'),
         projectName: selectedProject.displayName,
       })
-    : t('shell.startCli', { projectName: selectedProject.displayName });
+    : isSessionTerminal
+      ? t('shell.attachSession', { displayName: sessionTerminalLabel })
+      : t('shell.startCli', { projectName: selectedProject.displayName });
+
+  const connectLabel = isSessionTerminal ? t('shell.actions.attach') : t('shell.actions.connect');
+  const connectTitle = isSessionTerminal ? t('shell.actions.attachTitle') : t('shell.actions.connectTitle');
+  const connectingLabel = isSessionTerminal ? t('shell.attaching') : t('shell.connecting');
 
   const overlayMode = !isInitialized ? 'loading' : isConnecting ? 'connecting' : !isConnected ? 'connect' : null;
   const overlayDescription = overlayMode === 'connecting' ? connectingDescription : readyDescription;
@@ -253,7 +266,14 @@ export default function Shell({
         isInitialized={isInitialized}
         isRestarting={isRestarting}
         hasSession={Boolean(selectedSession)}
-        sessionDisplayNameShort={sessionDisplayNameShort}
+        contextLabel={headerContextLabel}
+        commandMenuSlot={(
+          <TerminalCommandMenu
+            isConnected={isConnected}
+            terminalRef={terminalRef}
+            onSendInput={sendInput}
+          />
+        )}
         onDisconnect={disconnectFromShell}
         onRestart={handleRestartShell}
         statusNewSessionText={t('shell.status.newSession')}
@@ -269,6 +289,7 @@ export default function Shell({
       <div className="relative flex-1 overflow-hidden p-2">
         <div
           ref={terminalContainerRef}
+          data-testid="shell-terminal"
           className="h-full w-full focus:outline-none"
           style={{ outline: 'none' }}
         />
@@ -278,9 +299,9 @@ export default function Shell({
             mode={overlayMode}
             description={overlayDescription}
             loadingLabel={t('shell.loading')}
-            connectLabel={t('shell.actions.connect')}
-            connectTitle={t('shell.actions.connectTitle')}
-            connectingLabel={t('shell.connecting')}
+            connectLabel={connectLabel}
+            connectTitle={connectTitle}
+            connectingLabel={connectingLabel}
             onConnect={connectToShell}
           />
         )}

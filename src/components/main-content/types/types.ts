@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from 'react';
 import type { AppTab, Project, ProjectSession } from '../../../types/app';
+import type { WebSocketFeedMessage } from '../../../contexts/WebSocketContext';
 
 export type SessionLifecycleHandler = (sessionId?: string | null) => void;
 
@@ -40,6 +41,7 @@ export type MainContentProps = {
   ws: WebSocket | null;
   sendMessage: (message: unknown) => void;
   latestMessage: unknown;
+  messageFeed: WebSocketFeedMessage[];
   isMobile: boolean;
   onMenuClick: () => void;
   isLoading: boolean;
@@ -49,6 +51,8 @@ export type MainContentProps = {
   onSessionProcessing: SessionLifecycleHandler;
   onSessionNotProcessing: SessionLifecycleHandler;
   processingSessions: Set<string>;
+  wasSessionMarkedProcessingRecently?: (sessionId?: string | null, windowMs?: number) => boolean;
+  wasSessionMarkedNotProcessingRecently?: (sessionId?: string | null, windowMs?: number) => boolean;
   onReplaceTemporarySession: SessionLifecycleHandler;
   onNavigateToSession: (targetSessionId: string) => void;
   onShowSettings: () => void;

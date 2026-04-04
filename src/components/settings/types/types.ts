@@ -1,6 +1,6 @@
 import type { Dispatch, SetStateAction } from 'react';
 
-export type SettingsMainTab = 'agents' | 'appearance' | 'git' | 'api' | 'tasks' | 'notifications' | 'plugins' | 'e2b';
+export type SettingsMainTab = 'agents' | 'appearance' | 'git' | 'api' | 'authCenter' | 'tasks' | 'notifications' | 'plugins' | 'e2b';
 export type AgentProvider = 'claude' | 'cursor' | 'codex' | 'gemini';
 export type AgentCategory = 'account' | 'permissions' | 'mcp';
 export type ProjectSortOrder = 'name' | 'date';
@@ -11,11 +11,28 @@ export type McpImportMode = 'form' | 'json';
 export type McpScope = 'user' | 'local';
 export type McpTransportType = 'stdio' | 'sse' | 'http';
 
+export type CodexFeatureToggles = {
+  multiAgent: boolean;
+  parallelFanOut: boolean;
+  reasoningSummaries: boolean;
+  shellTool: boolean;
+  webSearch: boolean;
+  networkAccess: boolean;
+};
+
 export type SettingsProject = {
   name: string;
   displayName?: string;
   fullPath?: string;
   path?: string;
+  kind?: 'local' | 'cloud';
+  runtime?: 'local' | 'e2b';
+  authSelections?: Record<string, unknown> | null;
+  cloud?: {
+    sandboxId?: string;
+    metadata?: Record<string, unknown> | null;
+    [key: string]: unknown;
+  };
 };
 
 export type AuthStatus = {
@@ -135,7 +152,11 @@ export type CodeEditorSettingsState = {
 export type SettingsStoragePayload = {
   claude: ClaudePermissionsState & { projectSortOrder: ProjectSortOrder; lastUpdated: string };
   cursor: CursorPermissionsState & { lastUpdated: string };
-  codex: { permissionMode: CodexPermissionMode; lastUpdated: string };
+  codex: {
+    permissionMode: CodexPermissionMode;
+    featureToggles: CodexFeatureToggles;
+    lastUpdated: string;
+  };
 };
 
 export type SettingsProps = {

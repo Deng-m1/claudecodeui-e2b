@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useMatch, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import Sidebar from '../sidebar/view/Sidebar';
 import MainContent from '../main-content/view/MainContent';
@@ -11,10 +11,11 @@ import MobileNav from './MobileNav';
 
 export default function AppContent() {
   const navigate = useNavigate();
-  const { sessionId } = useParams<{ sessionId?: string }>();
+  const sessionMatch = useMatch('/session/:sessionId');
+  const sessionId = sessionMatch?.params.sessionId;
   const { t } = useTranslation('common');
   const { isMobile } = useDeviceSettings({ trackPWA: false });
-  const { ws, sendMessage, latestMessage, isConnected } = useWebSocket();
+  const { ws, sendMessage, latestMessage, messageFeed, isConnected } = useWebSocket();
   const wasConnectedRef = useRef(false);
 
   const {
@@ -24,6 +25,8 @@ export default function AppContent() {
     markSessionAsInactive,
     markSessionAsProcessing,
     markSessionAsNotProcessing,
+    wasSessionMarkedProcessingRecently,
+    wasSessionMarkedNotProcessingRecently,
     replaceTemporarySession,
   } = useSessionProtection();
 
@@ -46,6 +49,7 @@ export default function AppContent() {
     sessionId,
     navigate,
     latestMessage,
+    messageFeed,
     isMobile,
     activeSessions,
   });
@@ -168,6 +172,7 @@ export default function AppContent() {
           ws={ws}
           sendMessage={sendMessage}
           latestMessage={latestMessage}
+          messageFeed={messageFeed}
           isMobile={isMobile}
           onMenuClick={() => setSidebarOpen(true)}
           isLoading={isLoadingProjects}
@@ -177,6 +182,8 @@ export default function AppContent() {
           onSessionProcessing={markSessionAsProcessing}
           onSessionNotProcessing={markSessionAsNotProcessing}
           processingSessions={processingSessions}
+          wasSessionMarkedProcessingRecently={wasSessionMarkedProcessingRecently}
+          wasSessionMarkedNotProcessingRecently={wasSessionMarkedNotProcessingRecently}
           onReplaceTemporarySession={replaceTemporarySession}
           onNavigateToSession={(targetSessionId: string) => navigate(`/session/${targetSessionId}`)}
           onShowSettings={() => setShowSettings(true)}

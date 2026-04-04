@@ -6,6 +6,7 @@ interface CollapsibleDisplayProps {
   toolId?: string;
   title: string;
   defaultOpen?: boolean;
+  resetKey?: string;
   action?: React.ReactNode;
   onTitleClick?: () => void;
   children: React.ReactNode;
@@ -31,6 +32,7 @@ export const CollapsibleDisplay: React.FC<CollapsibleDisplayProps> = ({
   toolName,
   title,
   defaultOpen = false,
+  resetKey,
   action,
   onTitleClick,
   children,
@@ -48,6 +50,7 @@ export const CollapsibleDisplay: React.FC<CollapsibleDisplayProps> = ({
         title={title}
         toolName={toolName}
         open={defaultOpen}
+        resetKey={resetKey}
         action={action}
         onTitleClick={onTitleClick}
       >

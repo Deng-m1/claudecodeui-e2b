@@ -2,6 +2,8 @@ import { useTranslation } from 'react-i18next';
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
 import type { AppTab, Project, ProjectSession } from '../../../../types/app';
 import { usePlugins } from '../../../../contexts/PluginsContext';
+import { formatShortSessionId, getSessionForkChildCount, getSessionForkedFromId } from '../../../../utils/sessionForks';
+import { isCloudSelection } from '../../../../utils/sessionSelection';
 
 type MainContentTitleProps = {
   activeTab: AppTab;
@@ -46,10 +48,14 @@ export default function MainContentTitle({
 }: MainContentTitleProps) {
   const { t } = useTranslation();
   const { plugins } = usePlugins();
+  const forkedFromId = getSessionForkedFromId(selectedSession);
+  const forkChildCount = getSessionForkChildCount(selectedSession);
+  const shortForkedFromId = formatShortSessionId(forkedFromId);
 
   const pluginDisplayName = activeTab.startsWith('plugin:')
     ? plugins.find((p) => p.name === activeTab.replace('plugin:', ''))?.displayName
     : undefined;
+  const showCloudNewSession = isCloudSelection(selectedProject, selectedSession);
 
   const showSessionIcon = activeTab === 'chat' && Boolean(selectedSession);
   const showChatNewSession = activeTab === 'chat' && !selectedSession;
@@ -68,11 +74,39 @@ export default function MainContentTitle({
             <h2 className="scrollbar-hide overflow-x-auto whitespace-nowrap text-sm font-semibold leading-tight text-foreground">
               {getSessionTitle(selectedSession)}
             </h2>
-            <div className="truncate text-[11px] leading-tight text-muted-foreground">{selectedProject.displayName}</div>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] leading-tight text-muted-foreground">
+              <span className="truncate">{selectedProject.displayName}</span>
+              {forkedFromId && (
+                <span title={t('mainContent.forkedFromTooltip', {
+                  id: forkedFromId,
+                  defaultValue: `Forked from ${forkedFromId}`,
+                })}>
+                  {t('mainContent.forkedFrom', {
+                    id: shortForkedFromId,
+                    defaultValue: `Forked from ${shortForkedFromId}`,
+                  })}
+                </span>
+              )}
+              {forkChildCount > 0 && (
+                <span title={t('mainContent.forksTooltip', {
+                  count: forkChildCount,
+                  defaultValue: forkChildCount === 1 ? 'Has 1 fork' : `Has ${forkChildCount} forks`,
+                })}>
+                  {t('mainContent.forks', {
+                    count: forkChildCount,
+                    defaultValue: forkChildCount === 1 ? 'Has 1 fork' : `Has ${forkChildCount} forks`,
+                  })}
+                </span>
+              )}
+            </div>
           </div>
         ) : showChatNewSession ? (
           <div className="min-w-0">
-            <h2 className="text-base font-semibold leading-tight text-foreground">{t('mainContent.newSession')}</h2>
+            <h2 className="text-base font-semibold leading-tight text-foreground">
+              {showCloudNewSession
+                ? t('providerSelection.e2bCloud.start', { defaultValue: 'Start Cloud Session' })
+                : t('mainContent.newSession')}
+            </h2>
             <div className="truncate text-xs leading-tight text-muted-foreground">{selectedProject.displayName}</div>
           </div>
         ) : (

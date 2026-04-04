@@ -39,7 +39,13 @@ interface ChatComposerProps {
   pendingPermissionRequests: PendingPermissionRequest[];
   handlePermissionDecision: (
     requestIds: string | string[],
-    decision: { allow?: boolean; message?: string; rememberEntry?: string | null; updatedInput?: unknown },
+    decision: {
+      allow?: boolean;
+      message?: string;
+      rememberEntry?: string | null;
+      reply?: 'once' | 'always' | 'reject';
+      updatedInput?: unknown;
+    },
   ) => void;
   handleGrantToolPermission: (suggestion: { entry: string; toolName: string }) => { success: boolean };
   claudeStatus: { text: string; tokens: number; can_interrupt: boolean } | null;
@@ -209,7 +215,7 @@ export default function ChatComposer({
         />}
       </div>
 
-      {!hasQuestionPanel && <form onSubmit={onSubmit as (event: FormEvent<HTMLFormElement>) => void} className="relative mx-auto max-w-4xl">
+      {!hasQuestionPanel && <form onSubmit={onSubmit as (event: FormEvent<HTMLFormElement>) => void} className="relative mx-auto max-w-4xl" data-testid="chat-composer-form">
         {isDragActive && (
           <div className="absolute inset-0 z-50 flex items-center justify-center rounded-2xl border-2 border-dashed border-primary/50 bg-primary/15">
             <div className="rounded-xl border border-border/30 bg-card p-4 shadow-lg">
@@ -295,6 +301,7 @@ export default function ChatComposer({
           <div className="relative z-10">
             <textarea
               ref={textareaRef}
+              data-testid="chat-composer-textarea"
               value={input}
               onChange={onInputChange}
               onClick={onTextareaClick}
@@ -331,6 +338,7 @@ export default function ChatComposer({
 
             <button
               type="submit"
+              data-testid="chat-composer-submit"
               disabled={!input.trim() || isLoading}
               onMouseDown={(event) => {
                 event.preventDefault();

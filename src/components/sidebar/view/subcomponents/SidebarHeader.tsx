@@ -3,6 +3,8 @@ import type { TFunction } from 'i18next';
 import { Button, Input } from '../../../../shared/view/ui';
 import { IS_PLATFORM } from '../../../../constants/config';
 import { cn } from '../../../../lib/utils';
+import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
+import type { SidebarSessionProviderFilter } from '../../types/types';
 
 type SearchMode = 'projects' | 'conversations';
 
@@ -16,6 +18,8 @@ type SidebarHeaderProps = {
   onClearSearchFilter: () => void;
   searchMode: SearchMode;
   onSearchModeChange: (mode: SearchMode) => void;
+  sessionProviderFilter: SidebarSessionProviderFilter;
+  onSessionProviderFilterChange: (filter: SidebarSessionProviderFilter) => void;
   onRefresh: () => void;
   isRefreshing: boolean;
   onCreateProject: () => void;
@@ -33,12 +37,22 @@ export default function SidebarHeader({
   onClearSearchFilter,
   searchMode,
   onSearchModeChange,
+  sessionProviderFilter,
+  onSessionProviderFilterChange,
   onRefresh,
   isRefreshing,
   onCreateProject,
   onCollapseSidebar,
   t,
 }: SidebarHeaderProps) {
+  const providerFilters: Array<{ id: SidebarSessionProviderFilter; label: string }> = [
+    { id: 'all', label: t('sessions.filters.all', { defaultValue: 'All providers' }) },
+    { id: 'claude', label: t('sessions.filters.claude', { defaultValue: 'Claude' }) },
+    { id: 'cursor', label: t('sessions.filters.cursor', { defaultValue: 'Cursor' }) },
+    { id: 'codex', label: t('sessions.filters.codex', { defaultValue: 'Codex' }) },
+    { id: 'gemini', label: t('sessions.filters.gemini', { defaultValue: 'Gemini' }) },
+  ];
+
   const LogoBlock = () => (
     <div className="flex min-w-0 items-center gap-2.5">
       <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg bg-primary/90 shadow-sm">
@@ -49,6 +63,44 @@ export default function SidebarHeader({
       <h1 className="truncate text-sm font-semibold tracking-tight text-foreground">{t('app.title')}</h1>
     </div>
   );
+
+  const renderProviderFilterBar = () => {
+    if (!(projectsCount > 0 && !isLoading && searchMode === 'projects')) {
+      return null;
+    }
+
+    return (
+      <div className="-mx-3 overflow-x-auto px-3 pb-0.5 pt-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="flex min-w-max items-center gap-1">
+          {providerFilters.map((filterOption) => {
+            const isActive = sessionProviderFilter === filterOption.id;
+
+            return (
+              <button
+                key={filterOption.id}
+                type="button"
+                data-testid="sidebar-provider-filter"
+                data-provider-id={filterOption.id}
+                aria-pressed={isActive}
+                onClick={() => onSessionProviderFilterChange(filterOption.id)}
+                className={cn(
+                  'inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors',
+                  isActive
+                    ? 'border-primary/30 bg-primary/10 text-foreground shadow-sm'
+                    : 'border-border/60 bg-background/80 text-muted-foreground hover:text-foreground',
+                )}
+              >
+                {filterOption.id !== 'all' && (
+                  <SessionProviderLogo provider={filterOption.id} className="h-3.5 w-3.5" />
+                )}
+                <span className="whitespace-nowrap">{filterOption.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="flex-shrink-0">
@@ -74,6 +126,7 @@ export default function SidebarHeader({
             <Button
               variant="ghost"
               size="sm"
+              data-testid="sidebar-refresh-projects"
               className="h-7 w-7 rounded-lg p-0 text-muted-foreground hover:bg-accent/80 hover:text-foreground"
               onClick={onRefresh}
               disabled={isRefreshing}
@@ -88,6 +141,7 @@ export default function SidebarHeader({
             <Button
               variant="ghost"
               size="sm"
+              data-testid="open-session-launcher"
               className="h-7 w-7 rounded-lg p-0 text-muted-foreground hover:bg-accent/80 hover:text-foreground"
               onClick={onCreateProject}
               title={t('tooltips.createProject')}
@@ -142,6 +196,7 @@ export default function SidebarHeader({
               <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/50" />
               <Input
                 type="text"
+                data-testid="sidebar-search"
                 placeholder={searchMode === 'conversations' ? t('search.conversationsPlaceholder') : t('projects.searchPlaceholder')}
                 value={searchFilter}
                 onChange={(event) => onSearchFilterChange(event.target.value)}
@@ -157,6 +212,7 @@ export default function SidebarHeader({
                 </button>
               )}
             </div>
+            {renderProviderFilterBar()}
           </div>
         )}
       </div>
@@ -191,6 +247,7 @@ export default function SidebarHeader({
               <RefreshCw className={`h-4 w-4 text-muted-foreground ${isRefreshing ? 'animate-spin' : ''}`} />
             </button>
             <button
+              data-testid="open-session-launcher"
               className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/90 text-primary-foreground transition-all active:scale-95"
               onClick={onCreateProject}
             >
@@ -234,6 +291,7 @@ export default function SidebarHeader({
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/50" />
               <Input
                 type="text"
+                data-testid="sidebar-search"
                 placeholder={searchMode === 'conversations' ? t('search.conversationsPlaceholder') : t('projects.searchPlaceholder')}
                 value={searchFilter}
                 onChange={(event) => onSearchFilterChange(event.target.value)}
@@ -249,6 +307,7 @@ export default function SidebarHeader({
                 </button>
               )}
             </div>
+            {renderProviderFilterBar()}
           </div>
         )}
       </div>

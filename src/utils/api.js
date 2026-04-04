@@ -1,5 +1,7 @@
 import { IS_PLATFORM } from "../constants/config";
 
+const HTML_RESPONSE_PATTERN = /^\s*</;
+
 // Utility function for authenticated API calls
 export const authenticatedFetch = (url, options = {}) => {
   const token = localStorage.getItem('auth-token');
@@ -15,6 +17,10 @@ export const authenticatedFetch = (url, options = {}) => {
     defaultHeaders['Authorization'] = `Bearer ${token}`;
   }
 
+  if (typeof window !== 'undefined' && typeof window.location?.host === 'string' && window.location.host) {
+    defaultHeaders['X-Sandbox-Connect-Host'] = window.location.host;
+  }
+
   return fetch(url, {
     ...options,
     headers: {
@@ -28,6 +34,27 @@ export const authenticatedFetch = (url, options = {}) => {
     }
     return response;
   });
+};
+
+export const parseApiJson = async (response, fallbackMessage = 'Request failed') => {
+  const rawText = await response.text();
+
+  if (!rawText) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(rawText);
+  } catch {
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('text/html') || HTML_RESPONSE_PATTERN.test(rawText)) {
+      throw new Error(
+        `${fallbackMessage}. The server returned HTML instead of JSON. Restart the backend server so the latest API routes are loaded.`,
+      );
+    }
+
+    throw new Error(`${fallbackMessage}. The server returned an invalid JSON response.`);
+  }
 };
 
 // API endpoints
@@ -52,8 +79,21 @@ export const api = {
   // Protected endpoints
   // config endpoint removed - no longer needed (frontend uses window.location)
   projects: () => authenticatedFetch('/api/projects'),
-  sessions: (projectName, limit = 5, offset = 0) =>
-    authenticatedFetch(`/api/projects/${projectName}/sessions?limit=${limit}&offset=${offset}`),
+  sessions: (projectName, limit = 5, offset = 0, options = {}) => {
+    const params = new URLSearchParams();
+    params.append('limit', String(limit));
+    params.append('offset', String(offset));
+
+    if (options.provider) {
+      params.append('provider', options.provider);
+    }
+
+    if (options.projectPath) {
+      params.append('projectPath', options.projectPath);
+    }
+
+    return authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/sessions?${params.toString()}`);
+  },
   // Unified endpoint — all providers through one URL
   unifiedSessionMessages: (sessionId, provider = 'claude', { projectName = '', projectPath = '', limit = null, offset = 0 } = {}) => {
     const params = new URLSearchParams();
@@ -67,17 +107,23 @@ export const api = {
     const queryString = params.toString();
     return authenticatedFetch(`/api/sessions/${encodeURIComponent(sessionId)}/messages${queryString ? `?${queryString}` : ''}`);
   },
+  sessionBootstrap: (sessionId) =>
+    authenticatedFetch(`/api/sessions/${encodeURIComponent(sessionId)}/bootstrap`),
   renameProject: (projectName, displayName) =>
-    authenticatedFetch(`/api/projects/${projectName}/rename`, {
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/rename`, {
       method: 'PUT',
       body: JSON.stringify({ displayName }),
     }),
   deleteSession: (projectName, sessionId) =>
-    authenticatedFetch(`/api/projects/${projectName}/sessions/${sessionId}`, {
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
+    }),
+  deleteE2BSession: (sessionId) =>
+    authenticatedFetch(`/api/e2b/sessions/${encodeURIComponent(sessionId)}`, {
       method: 'DELETE',
     }),
   renameSession: (sessionId, summary, provider) =>
-    authenticatedFetch(`/api/sessions/${sessionId}/rename`, {
+    authenticatedFetch(`/api/sessions/${encodeURIComponent(sessionId)}/rename`, {
       method: 'PUT',
       body: JSON.stringify({ summary, provider }),
     }),
@@ -90,7 +136,7 @@ export const api = {
       method: 'DELETE',
     }),
   deleteProject: (projectName, force = false) =>
-    authenticatedFetch(`/api/projects/${projectName}${force ? '?force=true' : ''}`, {
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}${force ? '?force=true' : ''}`, {
       method: 'DELETE',
     }),
   searchConversationsUrl: (query, limit = 50) => {
@@ -110,36 +156,36 @@ export const api = {
       body: JSON.stringify(workspaceData),
     }),
   readFile: (projectName, filePath) =>
-    authenticatedFetch(`/api/projects/${projectName}/file?filePath=${encodeURIComponent(filePath)}`),
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/file?filePath=${encodeURIComponent(filePath)}`),
   saveFile: (projectName, filePath, content) =>
-    authenticatedFetch(`/api/projects/${projectName}/file`, {
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/file`, {
       method: 'PUT',
       body: JSON.stringify({ filePath, content }),
     }),
   getFiles: (projectName, options = {}) =>
-    authenticatedFetch(`/api/projects/${projectName}/files`, options),
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/files`, options),
 
   // File operations
   createFile: (projectName, { path, type, name }) =>
-    authenticatedFetch(`/api/projects/${projectName}/files/create`, {
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/files/create`, {
       method: 'POST',
       body: JSON.stringify({ path, type, name }),
     }),
 
   renameFile: (projectName, { oldPath, newName }) =>
-    authenticatedFetch(`/api/projects/${projectName}/files/rename`, {
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/files/rename`, {
       method: 'PUT',
       body: JSON.stringify({ oldPath, newName }),
     }),
 
   deleteFile: (projectName, { path, type }) =>
-    authenticatedFetch(`/api/projects/${projectName}/files`, {
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/files`, {
       method: 'DELETE',
       body: JSON.stringify({ path, type }),
     }),
 
   uploadFiles: (projectName, formData) =>
-    authenticatedFetch(`/api/projects/${projectName}/files/upload`, {
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/files/upload`, {
       method: 'POST',
       body: formData,
       headers: {}, // Let browser set Content-Type for FormData
@@ -156,20 +202,20 @@ export const api = {
   taskmaster: {
     // Initialize TaskMaster in a project
     init: (projectName) =>
-      authenticatedFetch(`/api/taskmaster/init/${projectName}`, {
+      authenticatedFetch(`/api/taskmaster/init/${encodeURIComponent(projectName)}`, {
         method: 'POST',
       }),
 
     // Add a new task
     addTask: (projectName, { prompt, title, description, priority, dependencies }) =>
-      authenticatedFetch(`/api/taskmaster/add-task/${projectName}`, {
+      authenticatedFetch(`/api/taskmaster/add-task/${encodeURIComponent(projectName)}`, {
         method: 'POST',
         body: JSON.stringify({ prompt, title, description, priority, dependencies }),
       }),
 
     // Parse PRD to generate tasks
     parsePRD: (projectName, { fileName, numTasks, append }) =>
-      authenticatedFetch(`/api/taskmaster/parse-prd/${projectName}`, {
+      authenticatedFetch(`/api/taskmaster/parse-prd/${encodeURIComponent(projectName)}`, {
         method: 'POST',
         body: JSON.stringify({ fileName, numTasks, append }),
       }),
@@ -180,14 +226,14 @@ export const api = {
 
     // Apply a PRD template
     applyTemplate: (projectName, { templateId, fileName, customizations }) =>
-      authenticatedFetch(`/api/taskmaster/apply-template/${projectName}`, {
+      authenticatedFetch(`/api/taskmaster/apply-template/${encodeURIComponent(projectName)}`, {
         method: 'POST',
         body: JSON.stringify({ templateId, fileName, customizations }),
       }),
 
     // Update a task
     updateTask: (projectName, taskId, updates) =>
-      authenticatedFetch(`/api/taskmaster/update-task/${projectName}/${taskId}`, {
+      authenticatedFetch(`/api/taskmaster/update-task/${encodeURIComponent(projectName)}/${taskId}`, {
         method: 'PUT',
         body: JSON.stringify(updates),
       }),

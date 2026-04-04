@@ -66,7 +66,15 @@ import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import os from 'os';
 import sessionManager from './sessionManager.js';
-import { applyCustomSessionNames } from './database/db.js';
+import { applyCustomSessionNames, e2bSandboxDb, e2bSessionDb, e2bSessionMessagesDb } from './database/db.js';
+import {
+  buildE2BProjectName,
+  extractSandboxIdFromProjectName,
+  getE2BProjectDisplayName,
+  isE2BProjectName,
+  resolveE2BAgentProvider,
+} from './providers/e2b/project-utils.js';
+import { getProjectCapabilities } from './services/project-runtime/capabilities.js';
 
 // Import TaskMaster detection functions
 async function detectTaskMasterFolder(projectPath) {
@@ -198,10 +206,124 @@ async function detectTaskMasterFolder(projectPath) {
 
 // Cache for extracted project directories
 const projectDirectoryCache = new Map();
+const CODEX_INDEX_REFRESH_TTL_MS = 5000;
+const SESSION_PAGE_SIZE = 5;
+const SUPPORTED_SESSION_PROVIDERS = ['claude', 'cursor', 'codex', 'gemini'];
+const REQUIRED_CURSOR_STORE_TABLES = ['meta', 'blobs'];
+const cursorStoreSchemaCache = new Map();
+const CODEX_STATE_DB_PATH = path.join(os.homedir(), '.codex', 'state_5.sqlite');
+const codexSessionsIndexCache = {
+  files: new Map(),
+  sessionsByProject: new Map(),
+  sessionsById: new Map(),
+  refreshPromise: null,
+  lastRefreshAt: 0,
+};
+
+function getCursorStoreSchemaCacheEntry(storeDbPath, mtimeMs) {
+  const cached = cursorStoreSchemaCache.get(storeDbPath);
+  if (!cached) {
+    return null;
+  }
+
+  if (cached.mtimeMs !== mtimeMs) {
+    cursorStoreSchemaCache.delete(storeDbPath);
+    return null;
+  }
+
+  return cached;
+}
+
+async function readCursorSessionStore(storeDbPath, options = {}, reader) {
+  const { sessionId = null, suppressWarning = false } = options;
+  const stat = await fs.stat(storeDbPath);
+  const dbStatMtimeMs = stat.mtimeMs;
+  const cached = getCursorStoreSchemaCacheEntry(storeDbPath, dbStatMtimeMs);
+
+  if (cached?.valid === false) {
+    return {
+      ok: false,
+      reason: cached.reason,
+      dbStatMtimeMs,
+    };
+  }
+
+  const db = await open({
+    filename: storeDbPath,
+    driver: sqlite3.Database,
+    mode: sqlite3.OPEN_READONLY,
+  });
+
+  try {
+    const tableRows = await db.all("SELECT name FROM sqlite_master WHERE type = 'table'");
+    const tableNames = new Set(tableRows.map((row) => String(row.name || '')));
+    const missingTables = REQUIRED_CURSOR_STORE_TABLES.filter((tableName) => !tableNames.has(tableName));
+
+    if (missingTables.length > 0) {
+      const reason = `missing tables: ${missingTables.join(', ')}`;
+      const shouldWarn = !cached?.warned && !suppressWarning;
+      cursorStoreSchemaCache.set(storeDbPath, {
+        valid: false,
+        reason,
+        mtimeMs: dbStatMtimeMs,
+        warned: shouldWarn || cached?.warned === true,
+      });
+      if (shouldWarn && sessionId) {
+        console.warn(`Skipping Cursor session ${sessionId}: ${reason}`);
+      }
+      return {
+        ok: false,
+        reason,
+        dbStatMtimeMs,
+      };
+    }
+
+    const value = await reader(db, { dbStatMtimeMs });
+    cursorStoreSchemaCache.set(storeDbPath, {
+      valid: true,
+      mtimeMs: dbStatMtimeMs,
+      warned: false,
+    });
+    return {
+      ok: true,
+      value,
+      dbStatMtimeMs,
+    };
+  } catch (error) {
+    const reason = error?.message || 'unknown_cursor_store_error';
+    const isCacheable = /no such table/i.test(reason) || /SQLITE_(?:ERROR|CORRUPT|NOTADB)/i.test(reason);
+
+    if (isCacheable) {
+      const shouldWarn = !cached?.warned && !suppressWarning;
+      cursorStoreSchemaCache.set(storeDbPath, {
+        valid: false,
+        reason,
+        mtimeMs: dbStatMtimeMs,
+        warned: shouldWarn || cached?.warned === true,
+      });
+      if (shouldWarn && sessionId) {
+        console.warn(`Skipping Cursor session ${sessionId}: ${reason}`);
+      }
+      return {
+        ok: false,
+        reason,
+        dbStatMtimeMs,
+      };
+    }
+
+    throw error;
+  } finally {
+    await db.close();
+  }
+}
 
 // Clear cache when needed (called when project files change)
 function clearProjectDirectoryCache() {
   projectDirectoryCache.clear();
+}
+
+function encodeProjectPath(projectPath = '') {
+  return String(projectPath || '').replace(/[\\/:\s~_]/g, '-');
 }
 
 // Load project configuration file
@@ -381,9 +503,903 @@ async function extractProjectDirectory(projectName) {
   }
 }
 
-async function getProjects(progressCallback = null) {
+function parseJsonOrNull(value) {
+  if (!value || typeof value !== 'string') {
+    return null;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeE2BSessionRecord(record) {
+  const metadata = parseJsonOrNull(record.metadata_json);
+  const summary =
+    record.summary ||
+    metadata?.summary ||
+    metadata?.title ||
+    'New Session';
+
+  return {
+    id: record.session_id,
+    summary,
+    name: summary,
+    title: summary,
+    createdAt: record.created_at,
+    created_at: record.created_at,
+    updated_at: record.last_activity,
+    lastActivity: record.last_activity,
+    messageCount: Number(record.message_count ?? metadata?.messageCount ?? 0),
+    provider: resolveE2BAgentProvider(record.agent),
+    agent: record.agent,
+    model: record.model,
+    status: record.status,
+    runtime: 'e2b',
+  };
+}
+
+function extractProjectAuthSelections(value) {
+  if (value && typeof value === 'object') {
+    return value;
+  }
+
+  return null;
+}
+
+function sortSessionsByLastActivity(sessions = []) {
+  return [...sessions].sort(
+    (left, right) =>
+      new Date(right.lastActivity || right.updated_at || right.createdAt || right.created_at || 0) -
+      new Date(left.lastActivity || left.updated_at || left.createdAt || left.created_at || 0),
+  );
+}
+
+function paginateSessions(sessions, limit = SESSION_PAGE_SIZE, offset = 0) {
+  const normalizedOffset = Math.max(0, Number.isFinite(offset) ? offset : 0);
+  const total = sessions.length;
+
+  if (limit === 0) {
+    return {
+      sessions: [...sessions],
+      hasMore: false,
+      total,
+      offset: normalizedOffset,
+      limit: 0,
+    };
+  }
+
+  const normalizedLimit = Math.max(1, Number.isFinite(limit) ? limit : SESSION_PAGE_SIZE);
+  const paginatedSessions = sessions.slice(normalizedOffset, normalizedOffset + normalizedLimit);
+
+  return {
+    sessions: paginatedSessions,
+    hasMore: normalizedOffset + normalizedLimit < total,
+    total,
+    offset: normalizedOffset,
+    limit: normalizedLimit,
+  };
+}
+
+function buildProjectSessionMetaFromProviders(providerResults = {}) {
+  const byProvider = {};
+  let total = 0;
+  let hasMore = false;
+
+  for (const provider of SUPPORTED_SESSION_PROVIDERS) {
+    const result = providerResults[provider] || {};
+    const providerTotal = Number(result.total || result.sessions?.length || 0);
+    const providerHasMore = result.hasMore === true;
+
+    byProvider[provider] = {
+      total: providerTotal,
+      hasMore: providerHasMore,
+    };
+
+    total += providerTotal;
+    hasMore = hasMore || providerHasMore;
+  }
+
+  return {
+    total,
+    hasMore,
+    byProvider,
+  };
+}
+
+function buildE2BProviderSessionMeta(sessions, limit = SESSION_PAGE_SIZE) {
+  const counts = Object.fromEntries(
+    SUPPORTED_SESSION_PROVIDERS.map((provider) => [provider, 0]),
+  );
+
+  for (const session of sessions) {
+    const provider = resolveE2BAgentProvider(session.agent || session.provider);
+    counts[provider] = (counts[provider] || 0) + 1;
+  }
+
+  const meta = buildProjectSessionMetaFromProviders(
+    Object.fromEntries(
+      SUPPORTED_SESSION_PROVIDERS.map((provider) => [
+        provider,
+        {
+          total: counts[provider] || 0,
+          hasMore: limit > 0 ? (counts[provider] || 0) > limit : false,
+        },
+      ]),
+    ),
+  );
+
+  return {
+    ...meta,
+    hasMore: limit > 0 ? sessions.length > limit : false,
+    total: sessions.length,
+  };
+}
+
+function buildE2BProject(sandboxRecord, config, options = {}) {
+  const { limit = SESSION_PAGE_SIZE, offset = 0 } = options;
+  const projectName = buildE2BProjectName(sandboxRecord.sandbox_id);
+  const customName = config[projectName]?.displayName;
+  const metadata = parseJsonOrNull(sandboxRecord.metadata_json);
+  const allSessions = sortSessionsByLastActivity(e2bSessionDb
+    .getBySandbox(sandboxRecord.sandbox_id)
+    .map(normalizeE2BSessionRecord));
+  const paginatedSessions = paginateSessions(allSessions, limit, offset);
+
+  applyCustomSessionNames(allSessions, 'e2b');
+
+  return {
+    name: projectName,
+    path: sandboxRecord.workspace_path || '/home/user',
+    displayName: customName || getE2BProjectDisplayName(sandboxRecord.repo_url, sandboxRecord.sandbox_id),
+    fullPath: sandboxRecord.workspace_path || '/home/user',
+    isCustomName: Boolean(customName),
+    kind: 'cloud',
+    runtime: 'e2b',
+    capabilities: getProjectCapabilities('e2b'),
+    authSelections: extractProjectAuthSelections(metadata?.authSelections),
+    sessions: [],
+    cursorSessions: [],
+    codexSessions: [],
+    geminiSessions: [],
+    e2bSessions: paginatedSessions.sessions,
+    sessionMeta: buildE2BProviderSessionMeta(allSessions, limit),
+    cloud: {
+      sandboxId: sandboxRecord.sandbox_id,
+      status: sandboxRecord.status,
+      repoUrl: sandboxRecord.repo_url,
+      branch: sandboxRecord.branch,
+      workspacePath: sandboxRecord.workspace_path,
+      createdAt: sandboxRecord.created_at,
+      lastActivity: sandboxRecord.last_activity,
+      metadata,
+    },
+  };
+}
+
+async function pathExists(targetPath) {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function buildProjectDescriptor(projectName, projectPath, config = {}) {
+  const projectConfig = config[projectName] || {};
+  return {
+    name: projectName,
+    path: projectPath,
+    fullPath: projectPath,
+    kind: 'local',
+    runtime: 'local',
+    capabilities: getProjectCapabilities('local'),
+    displayName: projectConfig.displayName || await generateDisplayName(projectName, projectPath),
+    authSelections: extractProjectAuthSelections(projectConfig.authSelections),
+  };
+}
+
+async function resolveProjectDescriptorForPath(projectPath, config = {}) {
+  const normalizedProjectPath = normalizeComparablePath(projectPath);
+  const directProjectName = encodeProjectPath(projectPath);
+  const directProjectDir = path.join(os.homedir(), '.claude', 'projects', directProjectName);
+
+  if (await pathExists(directProjectDir)) {
+    return buildProjectDescriptor(directProjectName, projectPath, config);
+  }
+
+  if (config[directProjectName]) {
+    return buildProjectDescriptor(directProjectName, projectPath, config);
+  }
+
+  for (const [projectName, projectConfig] of Object.entries(config)) {
+    if (normalizeComparablePath(projectConfig?.originalPath) === normalizedProjectPath) {
+      return buildProjectDescriptor(projectName, projectPath, config);
+    }
+  }
+
+  return buildProjectDescriptor(directProjectName, projectPath, config);
+}
+
+async function resolveProjectPathForBootstrap(projectName, config = {}, sessionCwd = '') {
+  if (typeof sessionCwd === 'string' && sessionCwd.trim()) {
+    return sessionCwd.trim();
+  }
+
+  const configuredPath = config[projectName]?.originalPath;
+  if (typeof configuredPath === 'string' && configuredPath.trim()) {
+    return configuredPath.trim();
+  }
+
+  return extractProjectDirectory(projectName);
+}
+
+function mergeBootstrapSessionIntoList(sessions = [], selectedSession = null) {
+  if (!selectedSession?.id) {
+    return sessions;
+  }
+
+  const merged = [selectedSession, ...sessions.filter((session) => session.id !== selectedSession.id)];
+  return sortSessionsByLastActivity(merged);
+}
+
+function looksLikeUuidSessionId(sessionId = '') {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId);
+}
+
+async function buildBootstrapProject(project, session, {
+  provider = 'claude',
+  runtime = 'local',
+  kind = 'local',
+  cloud = null,
+  includeAllProviderSessions = true,
+  prefillSelectedSessionOnly = false,
+} = {}) {
+  const baseProject = {
+    name: project.name,
+    displayName: project.displayName,
+    path: project.path,
+    fullPath: project.fullPath,
+    kind,
+    runtime,
+    capabilities: getProjectCapabilities(runtime),
+    authSelections: project.authSelections || null,
+    cloud,
+    sessions: [],
+    cursorSessions: [],
+    codexSessions: [],
+    geminiSessions: [],
+    e2bSessions: [],
+    sessionMeta: buildProjectSessionMetaFromProviders(),
+  };
+
+  if (runtime === 'e2b') {
+    const sandboxId = extractSandboxIdFromProjectName(project.name);
+    const allSessions = sandboxId
+      ? sortSessionsByLastActivity(e2bSessionDb.getBySandbox(sandboxId).map(normalizeE2BSessionRecord))
+      : [];
+
+    applyCustomSessionNames(allSessions, 'e2b');
+
+    return {
+      ...baseProject,
+      e2bSessions: mergeBootstrapSessionIntoList(
+        paginateSessions(allSessions, SESSION_PAGE_SIZE, 0).sessions,
+        session,
+      ),
+      sessionMeta: buildE2BProviderSessionMeta(allSessions, SESSION_PAGE_SIZE),
+    };
+  }
+
+  if (prefillSelectedSessionOnly) {
+    const providerResults = {
+      claude: { sessions: [], hasMore: false, total: 0 },
+      cursor: { sessions: [], hasMore: false, total: 0 },
+      codex: { sessions: [], hasMore: false, total: 0 },
+      gemini: { sessions: [], hasMore: false, total: 0 },
+    };
+    if (providerResults[provider]) {
+      providerResults[provider] = {
+        sessions: session ? [session] : [],
+        hasMore: false,
+        total: session ? 1 : 0,
+      };
+    }
+
+    return {
+      ...baseProject,
+      sessions: provider === 'claude' && session ? [session] : [],
+      cursorSessions: provider === 'cursor' && session ? [session] : [],
+      codexSessions: provider === 'codex' && session ? [session] : [],
+      geminiSessions: provider === 'gemini' && session ? [session] : [],
+      sessionMeta: buildProjectSessionMetaFromProviders(providerResults),
+    };
+  }
+
+  const providerResults = {
+    claude: { sessions: [], hasMore: false, total: 0 },
+    cursor: { sessions: [], hasMore: false, total: 0 },
+    codex: { sessions: [], hasMore: false, total: 0 },
+    gemini: { sessions: [], hasMore: false, total: 0 },
+  };
+  const shouldLoadProvider = (candidateProvider) => includeAllProviderSessions || provider === candidateProvider;
+
+  if (shouldLoadProvider('claude')) {
+    try {
+      providerResults.claude = await getSessions(project.name, SESSION_PAGE_SIZE, 0);
+    } catch {
+      providerResults.claude = { sessions: [], hasMore: false, total: 0 };
+    }
+  }
+  applyCustomSessionNames(providerResults.claude.sessions || [], 'claude');
+
+  if (shouldLoadProvider('cursor')) {
+    try {
+      providerResults.cursor = await getCursorSessionsPage(project.fullPath, { limit: SESSION_PAGE_SIZE, offset: 0 });
+    } catch {
+      providerResults.cursor = { sessions: [], hasMore: false, total: 0 };
+    }
+  }
+  applyCustomSessionNames(providerResults.cursor.sessions || [], 'cursor');
+
+  if (shouldLoadProvider('codex')) {
+    try {
+      providerResults.codex = await getCodexSessionsPage(project.fullPath, { limit: SESSION_PAGE_SIZE, offset: 0 });
+    } catch {
+      providerResults.codex = { sessions: [], hasMore: false, total: 0 };
+    }
+  }
+  applyCustomSessionNames(providerResults.codex.sessions || [], 'codex');
+
+  if (shouldLoadProvider('gemini')) {
+    try {
+      providerResults.gemini = await getGeminiSessionsPage(project.fullPath, { limit: SESSION_PAGE_SIZE, offset: 0 });
+    } catch {
+      providerResults.gemini = { sessions: [], hasMore: false, total: 0 };
+    }
+  }
+  applyCustomSessionNames(providerResults.gemini.sessions || [], 'gemini');
+
+  return {
+    ...baseProject,
+    sessions: mergeBootstrapSessionIntoList(
+      providerResults.claude.sessions || [],
+      provider === 'claude' ? session : null,
+    ),
+    cursorSessions: mergeBootstrapSessionIntoList(
+      providerResults.cursor.sessions || [],
+      provider === 'cursor' ? session : null,
+    ),
+    codexSessions: mergeBootstrapSessionIntoList(
+      providerResults.codex.sessions || [],
+      provider === 'codex' ? session : null,
+    ),
+    geminiSessions: mergeBootstrapSessionIntoList(
+      providerResults.gemini.sessions || [],
+      provider === 'gemini' ? session : null,
+    ),
+    sessionMeta: buildProjectSessionMetaFromProviders(providerResults),
+  };
+}
+
+async function findClaudeSessionBootstrap(sessionId, config = {}) {
+  const claudeDir = path.join(os.homedir(), '.claude', 'projects');
+
+  let entries = [];
+  try {
+    entries = await fs.readdir(claudeDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const projectName = entry.name;
+    const sessionFilePath = path.join(claudeDir, projectName, `${sessionId}.jsonl`);
+    if (!(await pathExists(sessionFilePath))) {
+      continue;
+    }
+
+    const parsed = await parseJsonlSessions(sessionFilePath);
+    const session = parsed.sessions.find((candidate) => candidate.id === sessionId);
+    if (!session) {
+      continue;
+    }
+
+    applyCustomSessionNames([session], 'claude');
+
+    const projectPath = await resolveProjectPathForBootstrap(projectName, config, session.cwd);
+    const project = await buildProjectDescriptor(projectName, projectPath, config);
+
+    return {
+      provider: 'claude',
+      project: await buildBootstrapProject(project, session, {
+        provider: 'claude',
+        includeAllProviderSessions: false,
+        prefillSelectedSessionOnly: true,
+      }),
+      session: {
+        ...session,
+        __provider: 'claude',
+        __projectName: project.name,
+        __runtime: 'local',
+      },
+    };
+  }
+
+  return null;
+}
+
+async function findCursorSessionBootstrap(sessionId, config = {}) {
+  const cursorRoot = path.join(os.homedir(), '.cursor', 'chats');
+  const claudeProjectsRoot = path.join(os.homedir(), '.claude', 'projects');
+  let cwdDirs = [];
+  let claudeProjectDirs = [];
+
+  try {
+    cwdDirs = await fs.readdir(cursorRoot, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  try {
+    claudeProjectDirs = await fs.readdir(claudeProjectsRoot, { withFileTypes: true });
+  } catch {
+    claudeProjectDirs = [];
+  }
+
+  for (const cwdEntry of cwdDirs) {
+    if (!cwdEntry.isDirectory()) {
+      continue;
+    }
+
+    const storeDbPath = path.join(cursorRoot, cwdEntry.name, sessionId, 'store.db');
+    if (!(await pathExists(storeDbPath))) {
+      continue;
+    }
+
+    const knownProject = await (async () => {
+      for (const [projectName, projectConfig] of Object.entries(config)) {
+        const originalPath = projectConfig?.originalPath;
+        if (!originalPath) {
+          continue;
+        }
+
+        const cwdHash = crypto.createHash('md5').update(originalPath).digest('hex');
+        if (cwdHash === cwdEntry.name) {
+          return { projectName, projectPath: originalPath };
+        }
+      }
+
+      for (const projectEntry of claudeProjectDirs) {
+        if (!projectEntry.isDirectory()) {
+          continue;
+        }
+
+        const projectName = projectEntry.name;
+        const projectPath = await resolveProjectPathForBootstrap(projectName, config);
+        const cwdHash = crypto.createHash('md5').update(projectPath).digest('hex');
+        if (cwdHash === cwdEntry.name) {
+          return { projectName, projectPath };
+        }
+      }
+
+      return null;
+    })();
+
+    if (!knownProject) {
+      return null;
+    }
+
+    const cursorStore = await readCursorSessionStore(
+      storeDbPath,
+      { sessionId, suppressWarning: true },
+      async (db) => {
+        const metaRows = await db.all('SELECT key, value FROM meta');
+        const messageCountResult = await db.get('SELECT COUNT(*) as count FROM blobs');
+
+        const metadata = {};
+        for (const row of metaRows) {
+          if (!row.value) {
+            continue;
+          }
+
+          try {
+            const hexMatch = row.value.toString().match(/^[0-9a-fA-F]+$/);
+            if (hexMatch) {
+              metadata[row.key] = JSON.parse(Buffer.from(row.value, 'hex').toString('utf8'));
+            } else {
+              metadata[row.key] = row.value.toString();
+            }
+          } catch {
+            metadata[row.key] = row.value.toString();
+          }
+        }
+
+        return {
+          metadata,
+          messageCount: messageCountResult?.count || 0,
+        };
+      },
+    );
+
+    if (!cursorStore.ok) {
+      continue;
+    }
+
+    const { metadata, messageCount } = cursorStore.value;
+    const session = {
+      id: sessionId,
+      summary: metadata.title || metadata.sessionTitle || 'Untitled Session',
+      name: metadata.title || metadata.sessionTitle || 'Untitled Session',
+      createdAt: metadata.createdAt || null,
+      lastActivity: metadata.createdAt || null,
+      messageCount,
+    };
+
+    const project = await buildProjectDescriptor(knownProject.projectName, knownProject.projectPath, config);
+  return {
+    provider: 'cursor',
+    project: await buildBootstrapProject(project, session, {
+      provider: 'cursor',
+      includeAllProviderSessions: false,
+      prefillSelectedSessionOnly: true,
+    }),
+    session: {
+      ...session,
+      __provider: 'cursor',
+        __projectName: project.name,
+        __runtime: 'local',
+      },
+    };
+  }
+
+  return null;
+}
+
+async function findCodexSessionBootstrap(sessionId, config = {}) {
+  let codexSession = null;
+
+  if (await pathExists(CODEX_STATE_DB_PATH)) {
+    try {
+      const db = await open({
+        filename: CODEX_STATE_DB_PATH,
+        driver: sqlite3.Database,
+        mode: sqlite3.OPEN_READONLY,
+      });
+
+      try {
+        const thread = await db.get(
+          `SELECT id, rollout_path, cwd, title, updated_at, model_provider
+             FROM threads
+            WHERE id = ?`,
+          sessionId,
+        );
+
+        if (thread?.rollout_path && await pathExists(thread.rollout_path)) {
+          const parsedSession = await parseCodexSessionFile(thread.rollout_path);
+          if (parsedSession?.id === sessionId) {
+            codexSession = {
+              ...parsedSession,
+              filePath: thread.rollout_path,
+              normalizedProjectPath: normalizeComparablePath(parsedSession.cwd),
+            };
+          }
+        }
+      } finally {
+        await db.close();
+      }
+    } catch (error) {
+      console.warn(`Could not read Codex bootstrap metadata for ${sessionId}:`, error.message);
+    }
+  }
+
+  const cache = await refreshCodexSessionsIndex();
+  const indexedSession = cache.sessionsById.get(sessionId) || null;
+
+  if (codexSession && indexedSession) {
+    codexSession = {
+      ...indexedSession,
+      ...codexSession,
+      filePath: codexSession.filePath || indexedSession.filePath,
+      normalizedProjectPath: codexSession.normalizedProjectPath || indexedSession.normalizedProjectPath,
+      forkedFromId: codexSession.forkedFromId || indexedSession.forkedFromId || null,
+      forkChildCount: indexedSession.forkChildCount || 0,
+      forkChildIds: indexedSession.forkChildIds || [],
+    };
+  } else if (!codexSession) {
+    codexSession = indexedSession;
+  }
+
+  if (!codexSession) {
+    return null;
+  }
+
+  const session = {
+    id: codexSession.id,
+    summary: codexSession.summary,
+    name: codexSession.summary,
+    createdAt: codexSession.lastActivity,
+    lastActivity: codexSession.lastActivity,
+    messageCount: codexSession.messageCount,
+    model: codexSession.model,
+    provider: 'codex',
+    forkedFromId: codexSession.forkedFromId || null,
+    forkChildCount: Number(codexSession.forkChildCount || 0),
+    forkChildIds: Array.isArray(codexSession.forkChildIds) ? codexSession.forkChildIds : [],
+  };
+  applyCustomSessionNames([session], 'codex');
+
+  const project = await resolveProjectDescriptorForPath(codexSession.cwd, config);
+  return {
+    provider: 'codex',
+    project: await buildBootstrapProject(project, session, {
+      provider: 'codex',
+      includeAllProviderSessions: false,
+      prefillSelectedSessionOnly: true,
+    }),
+    session: {
+      ...session,
+      __provider: 'codex',
+      __projectName: project.name,
+      __runtime: 'local',
+    },
+  };
+}
+
+async function findGeminiSessionBootstrap(sessionId, config = {}) {
+  const memorySession = sessionManager.getSession(sessionId);
+  if (memorySession?.projectPath) {
+    const summary = sessionManager.getSessionSummary(memorySession);
+    const session = {
+      id: memorySession.id,
+      summary,
+      name: summary,
+      createdAt: memorySession.createdAt,
+      lastActivity: memorySession.lastActivity,
+      messageCount: memorySession.messages?.length || 0,
+      provider: 'gemini',
+    };
+    applyCustomSessionNames([session], 'gemini');
+
+    const project = await resolveProjectDescriptorForPath(memorySession.projectPath, config);
+    return {
+      provider: 'gemini',
+      project: await buildBootstrapProject(project, session, {
+        provider: 'gemini',
+        includeAllProviderSessions: false,
+        prefillSelectedSessionOnly: true,
+      }),
+      session: {
+        ...session,
+        __provider: 'gemini',
+        __projectName: project.name,
+        __runtime: 'local',
+      },
+    };
+  }
+
+  const geminiTmpDir = path.join(os.homedir(), '.gemini', 'tmp');
+  let projectDirs = [];
+  try {
+    projectDirs = await fs.readdir(geminiTmpDir);
+  } catch {
+    return null;
+  }
+
+  for (const projectDir of projectDirs) {
+    const projectRootFile = path.join(geminiTmpDir, projectDir, '.project_root');
+    const chatsDir = path.join(geminiTmpDir, projectDir, 'chats');
+    let projectRoot = '';
+    let chatFiles = [];
+
+    try {
+      projectRoot = (await fs.readFile(projectRootFile, 'utf8')).trim();
+      chatFiles = await fs.readdir(chatsDir);
+    } catch {
+      continue;
+    }
+
+    for (const chatFile of chatFiles) {
+      if (!chatFile.endsWith('.json')) {
+        continue;
+      }
+
+      try {
+        const filePath = path.join(chatsDir, chatFile);
+        const data = JSON.parse(await fs.readFile(filePath, 'utf8'));
+        const currentSessionId = data.sessionId || chatFile.replace('.json', '');
+        if (currentSessionId !== sessionId) {
+          continue;
+        }
+
+        const firstUserMsg = (data.messages || []).find((message) => message.type === 'user');
+        const firstUserText = Array.isArray(firstUserMsg?.content)
+          ? firstUserMsg.content.filter((part) => part?.text).map((part) => part.text).join(' ')
+          : (typeof firstUserMsg?.content === 'string' ? firstUserMsg.content : '');
+        const summary = firstUserText
+          ? (firstUserText.length > 50 ? `${firstUserText.substring(0, 50)}...` : firstUserText)
+          : 'Gemini CLI Session';
+
+        const session = {
+          id: sessionId,
+          summary,
+          name: summary,
+          createdAt: data.startTime || null,
+          lastActivity: data.lastUpdated || data.startTime || null,
+          messageCount: Array.isArray(data.messages) ? data.messages.length : 0,
+          provider: 'gemini',
+        };
+        applyCustomSessionNames([session], 'gemini');
+
+        const project = await resolveProjectDescriptorForPath(projectRoot, config);
+        return {
+          provider: 'gemini',
+          project: await buildBootstrapProject(project, session, { provider: 'gemini' }),
+          session: {
+            ...session,
+            __provider: 'gemini',
+            __projectName: project.name,
+            __runtime: 'local',
+          },
+        };
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  return null;
+}
+
+async function findE2BSessionBootstrap(sessionId, userId, config = {}) {
+  const sessionRecord = e2bSessionDb.getBySessionId(sessionId);
+  if (!sessionRecord || (userId && sessionRecord.user_id !== userId)) {
+    return null;
+  }
+
+  const sandboxRecord = e2bSandboxDb.getBySandboxId(sessionRecord.sandbox_id);
+  if (!sandboxRecord) {
+    return null;
+  }
+
+  const session = normalizeE2BSessionRecord(sessionRecord);
+  applyCustomSessionNames([session], 'e2b');
+
+  const projectName = buildE2BProjectName(sandboxRecord.sandbox_id);
+  const project = {
+    name: projectName,
+    displayName:
+      config[projectName]?.displayName || getE2BProjectDisplayName(sandboxRecord.repo_url, sandboxRecord.sandbox_id),
+    path: sandboxRecord.workspace_path || '/home/user',
+    fullPath: sandboxRecord.workspace_path || '/home/user',
+    authSelections: extractProjectAuthSelections(parseJsonOrNull(sandboxRecord.metadata_json)?.authSelections),
+  };
+  const subProvider = resolveE2BAgentProvider(sessionRecord.agent);
+
+  return {
+    provider: 'e2b',
+    project: await buildBootstrapProject(
+      project,
+      session,
+      {
+        provider: 'e2b',
+        runtime: 'e2b',
+        kind: 'cloud',
+        cloud: {
+          sandboxId: sandboxRecord.sandbox_id,
+          status: sandboxRecord.status,
+          repoUrl: sandboxRecord.repo_url,
+          branch: sandboxRecord.branch,
+          workspacePath: sandboxRecord.workspace_path,
+          createdAt: sandboxRecord.created_at,
+          lastActivity: sandboxRecord.last_activity,
+          metadata: parseJsonOrNull(sandboxRecord.metadata_json),
+        },
+      },
+    ),
+    session: {
+      ...session,
+      __provider: subProvider,
+      __projectName: project.name,
+      __runtime: 'e2b',
+    },
+  };
+}
+
+async function findSessionBootstrapFallback(sessionId, userId) {
+  const projects = await getProjects(null, { userId });
+
+  for (const project of projects) {
+    const session =
+      project.sessions?.find((candidate) => candidate.id === sessionId) ||
+      project.cursorSessions?.find((candidate) => candidate.id === sessionId) ||
+      project.codexSessions?.find((candidate) => candidate.id === sessionId) ||
+      project.geminiSessions?.find((candidate) => candidate.id === sessionId) ||
+      project.e2bSessions?.find((candidate) => candidate.id === sessionId);
+
+    if (!session) {
+      continue;
+    }
+
+    const provider =
+      project.e2bSessions?.some((candidate) => candidate.id === sessionId)
+        ? resolveE2BAgentProvider(session.agent || session.provider)
+        : project.cursorSessions?.some((candidate) => candidate.id === sessionId)
+          ? 'cursor'
+          : project.codexSessions?.some((candidate) => candidate.id === sessionId)
+            ? 'codex'
+            : project.geminiSessions?.some((candidate) => candidate.id === sessionId)
+              ? 'gemini'
+              : 'claude';
+
+    return {
+      provider: project.runtime === 'e2b' ? 'e2b' : provider,
+      project,
+      session: {
+        ...session,
+        __provider: provider,
+        __projectName: project.name,
+        __runtime: project.runtime === 'e2b' ? 'e2b' : 'local',
+      },
+    };
+  }
+
+  return null;
+}
+
+async function getSessionBootstrap(sessionId, options = {}) {
+  const { userId = null } = options;
+  const config = await loadProjectConfig();
+
+  const fastResolvers = sessionId.startsWith('e2b_')
+    ? [
+        () => findE2BSessionBootstrap(sessionId, userId, config),
+        () => findClaudeSessionBootstrap(sessionId, config),
+        () => findCodexSessionBootstrap(sessionId, config),
+        () => findGeminiSessionBootstrap(sessionId, config),
+        () => findCursorSessionBootstrap(sessionId, config),
+      ]
+    : looksLikeUuidSessionId(sessionId)
+      ? [
+          () => findE2BSessionBootstrap(sessionId, userId, config),
+          () => findCodexSessionBootstrap(sessionId, config),
+          () => findGeminiSessionBootstrap(sessionId, config),
+          () => findCursorSessionBootstrap(sessionId, config),
+          () => findClaudeSessionBootstrap(sessionId, config),
+        ]
+      : [
+          () => findE2BSessionBootstrap(sessionId, userId, config),
+          () => findClaudeSessionBootstrap(sessionId, config),
+          () => findCodexSessionBootstrap(sessionId, config),
+          () => findGeminiSessionBootstrap(sessionId, config),
+          () => findCursorSessionBootstrap(sessionId, config),
+        ];
+
+  for (const resolver of fastResolvers) {
+    try {
+      const result = await resolver();
+      if (result) {
+        return result;
+      }
+    } catch (error) {
+      console.warn(`[Projects] Session bootstrap resolver failed for ${sessionId}:`, error.message);
+    }
+  }
+
+  return findSessionBootstrapFallback(sessionId, userId);
+}
+
+async function getProjects(progressCallback = null, options = {}) {
   const claudeDir = path.join(os.homedir(), '.claude', 'projects');
   const config = await loadProjectConfig();
+  const { userId = null } = options;
   const projects = [];
   const existingProjects = new Set();
   const codexSessionsIndexRef = { sessionsByProject: null };
@@ -435,64 +1451,76 @@ async function getProjects(progressCallback = null) {
         path: actualProjectDir,
         displayName: customName || autoDisplayName,
         fullPath: fullPath,
+        kind: 'local',
+        runtime: 'local',
+        capabilities: getProjectCapabilities('local'),
         isCustomName: !!customName,
+        authSelections: extractProjectAuthSelections(config[entry.name]?.authSelections),
         sessions: [],
+        cursorSessions: [],
+        codexSessions: [],
         geminiSessions: [],
-        sessionMeta: {
-          hasMore: false,
-          total: 0
-        }
+        sessionMeta: buildProjectSessionMetaFromProviders(),
       };
+      const providerResults = {};
 
-      // Try to get sessions for this project (just first 5 for performance)
+      // Try to get sessions for this project (first page for performance)
       try {
-        const sessionResult = await getSessions(entry.name, 5, 0);
+        const sessionResult = await getSessions(entry.name, SESSION_PAGE_SIZE, 0);
         project.sessions = sessionResult.sessions || [];
-        project.sessionMeta = {
-          hasMore: sessionResult.hasMore,
-          total: sessionResult.total
-        };
+        providerResults.claude = sessionResult;
       } catch (e) {
         console.warn(`Could not load sessions for project ${entry.name}:`, e.message);
-        project.sessionMeta = {
-          hasMore: false,
-          total: 0
-        };
+        providerResults.claude = { sessions: [], hasMore: false, total: 0 };
       }
       applyCustomSessionNames(project.sessions, 'claude');
 
       // Also fetch Cursor sessions for this project
       try {
-        project.cursorSessions = await getCursorSessions(actualProjectDir);
+        const cursorResult = await getCursorSessionsPage(actualProjectDir, {
+          limit: SESSION_PAGE_SIZE,
+          offset: 0,
+        });
+        project.cursorSessions = cursorResult.sessions || [];
+        providerResults.cursor = cursorResult;
       } catch (e) {
         console.warn(`Could not load Cursor sessions for project ${entry.name}:`, e.message);
         project.cursorSessions = [];
+        providerResults.cursor = { sessions: [], hasMore: false, total: 0 };
       }
       applyCustomSessionNames(project.cursorSessions, 'cursor');
 
       // Also fetch Codex sessions for this project
       try {
-        project.codexSessions = await getCodexSessions(actualProjectDir, {
+        const codexResult = await getCodexSessionsPage(actualProjectDir, {
+          limit: SESSION_PAGE_SIZE,
+          offset: 0,
           indexRef: codexSessionsIndexRef,
         });
+        project.codexSessions = codexResult.sessions || [];
+        providerResults.codex = codexResult;
       } catch (e) {
         console.warn(`Could not load Codex sessions for project ${entry.name}:`, e.message);
         project.codexSessions = [];
+        providerResults.codex = { sessions: [], hasMore: false, total: 0 };
       }
       applyCustomSessionNames(project.codexSessions, 'codex');
 
       // Also fetch Gemini sessions for this project (UI + CLI)
       try {
-        const uiSessions = sessionManager.getProjectSessions(actualProjectDir) || [];
-        const cliSessions = await getGeminiCliSessions(actualProjectDir);
-        const uiIds = new Set(uiSessions.map(s => s.id));
-        const mergedGemini = [...uiSessions, ...cliSessions.filter(s => !uiIds.has(s.id))];
-        project.geminiSessions = mergedGemini;
+        const geminiResult = await getGeminiSessionsPage(actualProjectDir, {
+          limit: SESSION_PAGE_SIZE,
+          offset: 0,
+        });
+        project.geminiSessions = geminiResult.sessions || [];
+        providerResults.gemini = geminiResult;
       } catch (e) {
         console.warn(`Could not load Gemini sessions for project ${entry.name}:`, e.message);
         project.geminiSessions = [];
+        providerResults.gemini = { sessions: [], hasMore: false, total: 0 };
       }
       applyCustomSessionNames(project.geminiSessions, 'gemini');
+      project.sessionMeta = buildProjectSessionMetaFromProviders(providerResults);
 
       // Add TaskMaster detection
       try {
@@ -558,46 +1586,65 @@ async function getProjects(progressCallback = null) {
         path: actualProjectDir,
         displayName: projectConfig.displayName || await generateDisplayName(projectName, actualProjectDir),
         fullPath: actualProjectDir,
+        kind: 'local',
+        runtime: 'local',
+        capabilities: getProjectCapabilities('local'),
         isCustomName: !!projectConfig.displayName,
         isManuallyAdded: true,
+        authSelections: extractProjectAuthSelections(projectConfig?.authSelections),
         sessions: [],
-        geminiSessions: [],
-        sessionMeta: {
-          hasMore: false,
-          total: 0
-        },
         cursorSessions: [],
-        codexSessions: []
+        codexSessions: [],
+        geminiSessions: [],
+        sessionMeta: buildProjectSessionMetaFromProviders(),
+      };
+      const providerResults = {
+        claude: { sessions: [], hasMore: false, total: 0 },
       };
 
       // Try to fetch Cursor sessions for manual projects too
       try {
-        project.cursorSessions = await getCursorSessions(actualProjectDir);
+        const cursorResult = await getCursorSessionsPage(actualProjectDir, {
+          limit: SESSION_PAGE_SIZE,
+          offset: 0,
+        });
+        project.cursorSessions = cursorResult.sessions || [];
+        providerResults.cursor = cursorResult;
       } catch (e) {
         console.warn(`Could not load Cursor sessions for manual project ${projectName}:`, e.message);
+        providerResults.cursor = { sessions: [], hasMore: false, total: 0 };
       }
       applyCustomSessionNames(project.cursorSessions, 'cursor');
 
       // Try to fetch Codex sessions for manual projects too
       try {
-        project.codexSessions = await getCodexSessions(actualProjectDir, {
+        const codexResult = await getCodexSessionsPage(actualProjectDir, {
+          limit: SESSION_PAGE_SIZE,
+          offset: 0,
           indexRef: codexSessionsIndexRef,
         });
+        project.codexSessions = codexResult.sessions || [];
+        providerResults.codex = codexResult;
       } catch (e) {
         console.warn(`Could not load Codex sessions for manual project ${projectName}:`, e.message);
+        providerResults.codex = { sessions: [], hasMore: false, total: 0 };
       }
       applyCustomSessionNames(project.codexSessions, 'codex');
 
       // Try to fetch Gemini sessions for manual projects too (UI + CLI)
       try {
-        const uiSessions = sessionManager.getProjectSessions(actualProjectDir) || [];
-        const cliSessions = await getGeminiCliSessions(actualProjectDir);
-        const uiIds = new Set(uiSessions.map(s => s.id));
-        project.geminiSessions = [...uiSessions, ...cliSessions.filter(s => !uiIds.has(s.id))];
+        const geminiResult = await getGeminiSessionsPage(actualProjectDir, {
+          limit: SESSION_PAGE_SIZE,
+          offset: 0,
+        });
+        project.geminiSessions = geminiResult.sessions || [];
+        providerResults.gemini = geminiResult;
       } catch (e) {
         console.warn(`Could not load Gemini sessions for manual project ${projectName}:`, e.message);
+        providerResults.gemini = { sessions: [], hasMore: false, total: 0 };
       }
       applyCustomSessionNames(project.geminiSessions, 'gemini');
+      project.sessionMeta = buildProjectSessionMetaFromProviders(providerResults);
 
       // Add TaskMaster detection for manual projects
       try {
@@ -626,6 +1673,17 @@ async function getProjects(progressCallback = null) {
       }
 
       projects.push(project);
+    }
+  }
+
+  if (userId) {
+    try {
+      const cloudProjects = e2bSandboxDb
+        .getActive(userId)
+        .map((sandboxRecord) => buildE2BProject(sandboxRecord, config));
+      projects.push(...cloudProjects);
+    } catch (error) {
+      console.warn('[Projects] Could not load E2B cloud projects:', error.message);
     }
   }
 
@@ -806,6 +1864,10 @@ async function parseJsonlSessions(filePath) {
             }
 
             const session = sessions.get(entry.sessionId);
+
+            if (typeof entry.cwd === 'string' && entry.cwd.trim()) {
+              session.cwd = entry.cwd;
+            }
 
             // Apply pending summary if this entry has a parentUuid that matches a pending summary
             if (session.summary === 'New Session' && entry.parentUuid && pendingSummaries.has(entry.parentUuid)) {
@@ -1166,6 +2228,22 @@ async function isProjectEmpty(projectName) {
 
 // Delete a project (force=true to delete even with sessions)
 async function deleteProject(projectName, force = false) {
+  if (isE2BProjectName(projectName)) {
+    const sandboxId = extractSandboxIdFromProjectName(projectName);
+    if (!sandboxId) {
+      throw new Error('Invalid E2B cloud project name');
+    }
+
+    const config = await loadProjectConfig();
+    delete config[projectName];
+    await saveProjectConfig(config);
+
+    e2bSandboxDb.updateStatus(sandboxId, 'destroyed');
+    e2bSessionMessagesDb.deleteBySandboxId(sandboxId);
+    e2bSessionDb.deleteBySandboxId(sandboxId);
+    return true;
+  }
+
   const projectDir = path.join(os.homedir(), '.claude', 'projects', projectName);
 
   try {
@@ -1265,27 +2343,25 @@ async function addProjectManually(projectPath, displayName = null) {
     fullPath: absolutePath,
     displayName: displayName || await generateDisplayName(projectName, absolutePath),
     isManuallyAdded: true,
+    authSelections: null,
     sessions: [],
     cursorSessions: []
   };
 }
 
 // Fetch Cursor sessions for a given project path
-async function getCursorSessions(projectPath) {
+async function getCursorSessionsPage(projectPath, options = {}) {
+  const { limit = SESSION_PAGE_SIZE, offset = 0 } = options;
   try {
-    // Calculate cwdID hash for the project path (Cursor uses MD5 hash)
     const cwdId = crypto.createHash('md5').update(projectPath).digest('hex');
     const cursorChatsPath = path.join(os.homedir(), '.cursor', 'chats', cwdId);
 
-    // Check if the directory exists
     try {
       await fs.access(cursorChatsPath);
-    } catch (error) {
-      // No sessions for this project
-      return [];
+    } catch {
+      return { sessions: [], hasMore: false, total: 0, offset, limit };
     }
 
-    // List all session directories
     const sessionDirs = await fs.readdir(cursorChatsPath);
     const sessions = [];
 
@@ -1294,58 +2370,49 @@ async function getCursorSessions(projectPath) {
       const storeDbPath = path.join(sessionPath, 'store.db');
 
       try {
-        // Check if store.db exists
         await fs.access(storeDbPath);
 
-        // Capture store.db mtime as a reliable fallback timestamp
-        let dbStatMtimeMs = null;
-        try {
-          const stat = await fs.stat(storeDbPath);
-          dbStatMtimeMs = stat.mtimeMs;
-        } catch (_) { }
+        const cursorStore = await readCursorSessionStore(
+          storeDbPath,
+          { sessionId },
+          async (db, { dbStatMtimeMs }) => {
+            const metaRows = await db.all('SELECT key, value FROM meta');
+            const messageCountResult = await db.get('SELECT COUNT(*) as count FROM blobs');
 
-        // Open SQLite database
-        const db = await open({
-          filename: storeDbPath,
-          driver: sqlite3.Database,
-          mode: sqlite3.OPEN_READONLY
-        });
+            const metadata = {};
+            for (const row of metaRows) {
+              if (!row.value) {
+                continue;
+              }
 
-        // Get metadata from meta table
-        const metaRows = await db.all(`
-          SELECT key, value FROM meta
-        `);
-
-        // Parse metadata
-        let metadata = {};
-        for (const row of metaRows) {
-          if (row.value) {
-            try {
-              // Try to decode as hex-encoded JSON
-              const hexMatch = row.value.toString().match(/^[0-9a-fA-F]+$/);
-              if (hexMatch) {
-                const jsonStr = Buffer.from(row.value, 'hex').toString('utf8');
-                metadata[row.key] = JSON.parse(jsonStr);
-              } else {
+              try {
+                const hexMatch = row.value.toString().match(/^[0-9a-fA-F]+$/);
+                if (hexMatch) {
+                  const jsonStr = Buffer.from(row.value, 'hex').toString('utf8');
+                  metadata[row.key] = JSON.parse(jsonStr);
+                } else {
+                  metadata[row.key] = row.value.toString();
+                }
+              } catch {
                 metadata[row.key] = row.value.toString();
               }
-            } catch (e) {
-              metadata[row.key] = row.value.toString();
             }
-          }
+
+            return {
+              metadata,
+              messageCount: messageCountResult?.count || 0,
+              dbStatMtimeMs,
+            };
+          },
+        );
+
+        if (!cursorStore.ok) {
+          continue;
         }
 
-        // Get message count
-        const messageCountResult = await db.get(`
-          SELECT COUNT(*) as count FROM blobs
-        `);
-
-        await db.close();
-
-        // Extract session info
+        const { metadata, messageCount, dbStatMtimeMs } = cursorStore.value;
         const sessionName = metadata.title || metadata.sessionTitle || 'Untitled Session';
 
-        // Determine timestamp - prefer createdAt from metadata, fall back to db file mtime
         let createdAt = null;
         if (metadata.createdAt) {
           createdAt = new Date(metadata.createdAt).toISOString();
@@ -1358,27 +2425,26 @@ async function getCursorSessions(projectPath) {
         sessions.push({
           id: sessionId,
           name: sessionName,
-          createdAt: createdAt,
-          lastActivity: createdAt, // For compatibility with Claude sessions
-          messageCount: messageCountResult.count || 0,
-          projectPath: projectPath
+          createdAt,
+          lastActivity: createdAt,
+          messageCount,
+          projectPath,
         });
-
       } catch (error) {
         console.warn(`Could not read Cursor session ${sessionId}:`, error.message);
       }
     }
 
-    // Sort sessions by creation time (newest first)
-    sessions.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-    // Return only the first 5 sessions for performance
-    return sessions.slice(0, 5);
-
+    return paginateSessions(sortSessionsByLastActivity(sessions), limit, offset);
   } catch (error) {
     console.error('Error fetching Cursor sessions:', error);
-    return [];
+    return { sessions: [], hasMore: false, total: 0, offset, limit };
   }
+}
+
+async function getCursorSessions(projectPath, options = {}) {
+  const result = await getCursorSessionsPage(projectPath, options);
+  return result.sessions;
 }
 
 
@@ -1420,61 +2486,178 @@ async function findCodexJsonlFiles(dir) {
   return files;
 }
 
-async function buildCodexSessionsIndex() {
-  const codexSessionsDir = path.join(os.homedir(), '.codex', 'sessions');
+function rebuildCodexSessionsIndexMaps() {
   const sessionsByProject = new Map();
+  const sessionsById = new Map();
 
-  try {
-    await fs.access(codexSessionsDir);
-  } catch (error) {
-    return sessionsByProject;
+  for (const entry of codexSessionsIndexCache.files.values()) {
+    if (!entry?.session) {
+      continue;
+    }
+
+    const session = {
+      ...entry.session,
+      filePath: entry.filePath,
+    };
+    const existingSession = sessionsById.get(session.id);
+
+    if (
+      !existingSession ||
+      new Date(session.lastActivity || 0).getTime() >= new Date(existingSession.lastActivity || 0).getTime()
+    ) {
+      sessionsById.set(session.id, session);
+    }
   }
 
-  const jsonlFiles = await findCodexJsonlFiles(codexSessionsDir);
+  for (const session of sessionsById.values()) {
+    session.forkChildCount = 0;
+    session.forkChildIds = [];
+  }
 
-  for (const filePath of jsonlFiles) {
-    try {
-      const sessionData = await parseCodexSessionFile(filePath);
-      if (!sessionData || !sessionData.id) {
-        continue;
-      }
-
-      const normalizedProjectPath = normalizeComparablePath(sessionData.cwd);
-      if (!normalizedProjectPath) {
-        continue;
-      }
-
-      const session = {
-        id: sessionData.id,
-        summary: sessionData.summary || 'Codex Session',
-        messageCount: sessionData.messageCount || 0,
-        lastActivity: sessionData.timestamp ? new Date(sessionData.timestamp) : new Date(),
-        cwd: sessionData.cwd,
-        model: sessionData.model,
-        filePath,
-        provider: 'codex',
-      };
-
-      if (!sessionsByProject.has(normalizedProjectPath)) {
-        sessionsByProject.set(normalizedProjectPath, []);
-      }
-
-      sessionsByProject.get(normalizedProjectPath).push(session);
-    } catch (error) {
-      console.warn(`Could not parse Codex session file ${filePath}:`, error.message);
+  for (const session of sessionsById.values()) {
+    const forkedFromId = typeof session.forkedFromId === 'string' ? session.forkedFromId.trim() : '';
+    if (!forkedFromId) {
+      continue;
     }
+
+    const parentSession = sessionsById.get(forkedFromId);
+    if (!parentSession) {
+      continue;
+    }
+
+    parentSession.forkChildCount = Number(parentSession.forkChildCount || 0) + 1;
+    parentSession.forkChildIds = [...(parentSession.forkChildIds || []), session.id];
+  }
+
+  for (const session of sessionsById.values()) {
+    if (!sessionsByProject.has(session.normalizedProjectPath)) {
+      sessionsByProject.set(session.normalizedProjectPath, []);
+    }
+
+    sessionsByProject.get(session.normalizedProjectPath).push(session);
   }
 
   for (const sessions of sessionsByProject.values()) {
     sessions.sort((a, b) => new Date(b.lastActivity) - new Date(a.lastActivity));
   }
 
-  return sessionsByProject;
+  codexSessionsIndexCache.sessionsByProject = sessionsByProject;
+  codexSessionsIndexCache.sessionsById = sessionsById;
+}
+
+async function refreshCodexSessionsIndex({ force = false } = {}) {
+  if (!force && codexSessionsIndexCache.refreshPromise) {
+    return codexSessionsIndexCache.refreshPromise;
+  }
+
+  if (
+    !force &&
+    codexSessionsIndexCache.lastRefreshAt > 0 &&
+    Date.now() - codexSessionsIndexCache.lastRefreshAt < CODEX_INDEX_REFRESH_TTL_MS
+  ) {
+    return {
+      sessionsByProject: codexSessionsIndexCache.sessionsByProject,
+      sessionsById: codexSessionsIndexCache.sessionsById,
+    };
+  }
+
+  codexSessionsIndexCache.refreshPromise = (async () => {
+    const codexSessionsDir = path.join(os.homedir(), '.codex', 'sessions');
+    const nextFiles = new Map();
+
+    try {
+      await fs.access(codexSessionsDir);
+    } catch (error) {
+      codexSessionsIndexCache.files = new Map();
+      codexSessionsIndexCache.sessionsByProject = new Map();
+      codexSessionsIndexCache.sessionsById = new Map();
+      codexSessionsIndexCache.lastRefreshAt = Date.now();
+      return {
+        sessionsByProject: codexSessionsIndexCache.sessionsByProject,
+        sessionsById: codexSessionsIndexCache.sessionsById,
+      };
+    }
+
+    const jsonlFiles = await findCodexJsonlFiles(codexSessionsDir);
+
+    for (const filePath of jsonlFiles) {
+      let stats;
+      try {
+        stats = await fs.stat(filePath);
+      } catch {
+        continue;
+      }
+
+      const prev = codexSessionsIndexCache.files.get(filePath);
+      if (prev && prev.mtimeMs === stats.mtimeMs && prev.size === stats.size) {
+        nextFiles.set(filePath, prev);
+        continue;
+      }
+
+      try {
+        const sessionData = await parseCodexSessionFile(filePath);
+        if (!sessionData?.id) {
+          nextFiles.set(filePath, {
+            filePath,
+            mtimeMs: stats.mtimeMs,
+            size: stats.size,
+            session: null,
+          });
+          continue;
+        }
+
+        const normalizedProjectPath = normalizeComparablePath(sessionData.cwd);
+        if (!normalizedProjectPath) {
+          nextFiles.set(filePath, {
+            filePath,
+            mtimeMs: stats.mtimeMs,
+            size: stats.size,
+            session: null,
+          });
+          continue;
+        }
+
+        nextFiles.set(filePath, {
+          filePath,
+          mtimeMs: stats.mtimeMs,
+          size: stats.size,
+          session: {
+            id: sessionData.id,
+            summary: sessionData.summary || 'Codex Session',
+            messageCount: sessionData.messageCount || 0,
+            lastActivity: sessionData.timestamp ? new Date(sessionData.timestamp) : new Date(),
+            cwd: sessionData.cwd,
+            model: sessionData.model,
+            provider: 'codex',
+            forkedFromId: sessionData.forkedFromId || null,
+            normalizedProjectPath,
+          },
+        });
+      } catch (error) {
+        console.warn(`Could not parse Codex session file ${filePath}:`, error.message);
+      }
+    }
+
+    codexSessionsIndexCache.files = nextFiles;
+    rebuildCodexSessionsIndexMaps();
+    codexSessionsIndexCache.lastRefreshAt = Date.now();
+
+    return {
+      sessionsByProject: codexSessionsIndexCache.sessionsByProject,
+      sessionsById: codexSessionsIndexCache.sessionsById,
+    };
+  })();
+
+  try {
+    return await codexSessionsIndexCache.refreshPromise;
+  } finally {
+    codexSessionsIndexCache.refreshPromise = null;
+  }
 }
 
 // Fetch Codex sessions for a given project path
-async function getCodexSessions(projectPath, options = {}) {
-  const { limit = 5, indexRef = null } = options;
+async function getCodexSessionsPage(projectPath, options = {}) {
+  const { limit = SESSION_PAGE_SIZE, offset = 0, indexRef = null } = options;
   try {
     const normalizedProjectPath = normalizeComparablePath(projectPath);
     if (!normalizedProjectPath) {
@@ -1482,19 +2665,24 @@ async function getCodexSessions(projectPath, options = {}) {
     }
 
     if (indexRef && !indexRef.sessionsByProject) {
-      indexRef.sessionsByProject = await buildCodexSessionsIndex();
+      const cache = await refreshCodexSessionsIndex();
+      indexRef.sessionsByProject = cache.sessionsByProject;
     }
 
-    const sessionsByProject = indexRef?.sessionsByProject || await buildCodexSessionsIndex();
+    const sessionsByProject = indexRef?.sessionsByProject || (await refreshCodexSessionsIndex()).sessionsByProject;
     const sessions = sessionsByProject.get(normalizedProjectPath) || [];
 
-    // Return limited sessions for performance (0 = unlimited for deletion)
-    return limit > 0 ? sessions.slice(0, limit) : [...sessions];
+    return paginateSessions(sessions, limit, offset);
 
   } catch (error) {
     console.error('Error fetching Codex sessions:', error);
-    return [];
+    return { sessions: [], hasMore: false, total: 0, offset, limit };
   }
+}
+
+async function getCodexSessions(projectPath, options = {}) {
+  const result = await getCodexSessionsPage(projectPath, options);
+  return result.sessions;
 }
 
 function isVisibleCodexUserMessage(payload) {
@@ -1540,13 +2728,27 @@ async function parseCodexSessionFile(filePath) {
 
           // Extract session metadata
           if (entry.type === 'session_meta' && entry.payload) {
-            sessionMeta = {
+            const nextSessionMeta = {
               id: entry.payload.id,
               cwd: entry.payload.cwd,
               model: entry.payload.model || entry.payload.model_provider,
               timestamp: entry.timestamp,
-              git: entry.payload.git
+              git: entry.payload.git,
+              forkedFromId:
+                typeof entry.payload.forked_from_id === 'string' && entry.payload.forked_from_id.trim()
+                  ? entry.payload.forked_from_id.trim()
+                  : null,
             };
+
+            if (!sessionMeta) {
+              sessionMeta = nextSessionMeta;
+            } else if (sessionMeta.id === nextSessionMeta.id) {
+              sessionMeta = {
+                ...sessionMeta,
+                ...nextSessionMeta,
+                forkedFromId: sessionMeta.forkedFromId || nextSessionMeta.forkedFromId || null,
+              };
+            }
           }
 
           // Count visible user messages and extract summary from the latest plain user input.
@@ -1589,28 +2791,8 @@ async function parseCodexSessionFile(filePath) {
 // Get messages for a specific Codex session
 async function getCodexSessionMessages(sessionId, limit = null, offset = 0) {
   try {
-    const codexSessionsDir = path.join(os.homedir(), '.codex', 'sessions');
-
-    // Find the session file by searching for the session ID
-    const findSessionFile = async (dir) => {
-      try {
-        const entries = await fs.readdir(dir, { withFileTypes: true });
-        for (const entry of entries) {
-          const fullPath = path.join(dir, entry.name);
-          if (entry.isDirectory()) {
-            const found = await findSessionFile(fullPath);
-            if (found) return found;
-          } else if (entry.name.includes(sessionId) && entry.name.endsWith('.jsonl')) {
-            return fullPath;
-          }
-        }
-      } catch (error) {
-        // Skip directories we can't read
-      }
-      return null;
-    };
-
-    const sessionFilePath = await findSessionFile(codexSessionsDir);
+    const cache = await refreshCodexSessionsIndex();
+    const sessionFilePath = cache.sessionsById.get(sessionId)?.filePath || null;
 
     if (!sessionFilePath) {
       console.warn(`Codex session file not found for session ${sessionId}`);
@@ -2408,6 +3590,97 @@ async function searchGeminiSessionsForProject(
   }
 }
 
+async function getGeminiProjectSessions(projectPath) {
+  const uiSessions = sessionManager.getProjectSessions(projectPath) || [];
+  const cliSessions = await getGeminiCliSessions(projectPath);
+  const mergedSessions = [];
+  const seenSessionIds = new Set();
+
+  for (const session of [...uiSessions, ...cliSessions]) {
+    if (seenSessionIds.has(session.id)) {
+      continue;
+    }
+
+    seenSessionIds.add(session.id);
+    mergedSessions.push(session);
+  }
+
+  return sortSessionsByLastActivity(mergedSessions);
+}
+
+async function getGeminiSessionsPage(projectPath, options = {}) {
+  const { limit = SESSION_PAGE_SIZE, offset = 0 } = options;
+
+  try {
+    const sessions = await getGeminiProjectSessions(projectPath);
+    return paginateSessions(sessions, limit, offset);
+  } catch (error) {
+    console.error('Error fetching Gemini sessions:', error);
+    return { sessions: [], hasMore: false, total: 0, offset, limit };
+  }
+}
+
+async function getProjectSessionsPage({
+  projectName,
+  projectPath = '',
+  provider = 'claude',
+  limit = SESSION_PAGE_SIZE,
+  offset = 0,
+} = {}) {
+  const normalizedProvider = typeof provider === 'string' ? provider.toLowerCase() : 'claude';
+
+  if (isE2BProjectName(projectName)) {
+    const sandboxId = extractSandboxIdFromProjectName(projectName);
+
+    if (!sandboxId) {
+      return { sessions: [], hasMore: false, total: 0, offset, limit };
+    }
+
+    let sessions = sortSessionsByLastActivity(
+      e2bSessionDb.getBySandbox(sandboxId).map(normalizeE2BSessionRecord),
+    );
+
+    if (normalizedProvider && normalizedProvider !== 'all') {
+      sessions = sessions.filter(
+        (session) => resolveE2BAgentProvider(session.agent || session.provider) === normalizedProvider,
+      );
+    }
+
+    applyCustomSessionNames(sessions, 'e2b');
+    return paginateSessions(sessions, limit, offset);
+  }
+
+  if (normalizedProvider === 'claude') {
+    const result = await getSessions(projectName, limit, offset);
+    applyCustomSessionNames(result.sessions || [], 'claude');
+    return result;
+  }
+
+  if (!projectPath) {
+    return { sessions: [], hasMore: false, total: 0, offset, limit };
+  }
+
+  if (normalizedProvider === 'cursor') {
+    const result = await getCursorSessionsPage(projectPath, { limit, offset });
+    applyCustomSessionNames(result.sessions || [], 'cursor');
+    return result;
+  }
+
+  if (normalizedProvider === 'codex') {
+    const result = await getCodexSessionsPage(projectPath, { limit, offset });
+    applyCustomSessionNames(result.sessions || [], 'codex');
+    return result;
+  }
+
+  if (normalizedProvider === 'gemini') {
+    const result = await getGeminiSessionsPage(projectPath, { limit, offset });
+    applyCustomSessionNames(result.sessions || [], 'gemini');
+    return result;
+  }
+
+  throw new Error(`Unsupported provider: ${provider}`);
+}
+
 async function getGeminiCliSessions(projectPath) {
   const normalizedProjectPath = normalizeComparablePath(projectPath);
   if (!normalizedProjectPath) return [];
@@ -2540,6 +3813,8 @@ async function getGeminiCliSessionMessages(sessionId) {
 
 export {
   getProjects,
+  getSessionBootstrap,
+  getProjectSessionsPage,
   getSessions,
   getSessionMessages,
   parseJsonlSessions,

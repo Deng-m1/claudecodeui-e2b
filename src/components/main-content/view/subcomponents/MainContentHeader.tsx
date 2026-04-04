@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState, useEffect } from 'react';
 import type { MainContentHeaderProps } from '../../types/types';
+import MobileCreateProjectButton from './MobileCreateProjectButton';
 import MobileMenuButton from './MobileMenuButton';
 import MainContentTabSwitcher from './MainContentTabSwitcher';
 import MainContentTitle from './MainContentTitle';
@@ -38,6 +39,7 @@ export default function MainContentHeader({
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           {isMobile && <MobileMenuButton onMenuClick={onMenuClick} />}
+          {isMobile && <MobileCreateProjectButton onFallbackOpenMenu={onMenuClick} />}
           <MainContentTitle
             activeTab={activeTab}
             selectedProject={selectedProject}
@@ -55,11 +57,13 @@ export default function MainContentHeader({
             onScroll={updateScrollState}
             className="scrollbar-hide overflow-x-auto"
           >
-            <MainContentTabSwitcher
-              activeTab={activeTab}
-              setActiveTab={setActiveTab}
-              shouldShowTasksTab={shouldShowTasksTab}
-            />
+          <MainContentTabSwitcher
+            activeTab={activeTab}
+            setActiveTab={setActiveTab}
+            selectedProject={selectedProject}
+            selectedSession={selectedSession}
+            shouldShowTasksTab={shouldShowTasksTab}
+          />
           </div>
           {canScrollRight && (
             <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-6 bg-gradient-to-l from-background to-transparent" />

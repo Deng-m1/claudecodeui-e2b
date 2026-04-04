@@ -13,6 +13,7 @@ export function useShellRuntime({
   isPlainShell,
   minimal,
   autoConnect,
+  isActive,
   isRestarting,
   onProcessComplete,
   onOutputRef,
@@ -29,9 +30,13 @@ export function useShellRuntime({
   const selectedSessionRef = useRef(selectedSession);
   const initialCommandRef = useRef(initialCommand);
   const isPlainShellRef = useRef(isPlainShell);
+  const isActiveRef = useRef(isActive);
   const onProcessCompleteRef = useRef(onProcessComplete);
   const authUrlRef = useRef('');
   const lastSessionIdRef = useRef<string | null>(selectedSession?.id ?? null);
+  const lastProjectKeyRef = useRef<string | null>(
+    selectedProject?.name ?? selectedProject?.fullPath ?? selectedProject?.path ?? null,
+  );
 
   // Keep mutable values in refs so websocket handlers always read current data.
   useEffect(() => {
@@ -39,8 +44,9 @@ export function useShellRuntime({
     selectedSessionRef.current = selectedSession;
     initialCommandRef.current = initialCommand;
     isPlainShellRef.current = isPlainShell;
+    isActiveRef.current = isActive;
     onProcessCompleteRef.current = onProcessComplete;
-  }, [selectedProject, selectedSession, initialCommand, isPlainShell, onProcessComplete]);
+  }, [selectedProject, selectedSession, initialCommand, isPlainShell, isActive, onProcessComplete]);
 
   const setCurrentAuthUrl = useCallback((nextAuthUrl: string) => {
     authUrlRef.current = nextAuthUrl;
@@ -113,6 +119,7 @@ export function useShellRuntime({
     selectedSessionRef,
     initialCommandRef,
     isPlainShellRef,
+    isActiveRef,
     onProcessCompleteRef,
     isInitialized,
     autoConnect,
@@ -148,6 +155,15 @@ export function useShellRuntime({
 
     lastSessionIdRef.current = currentSessionId;
   }, [disconnectFromShell, isInitialized, selectedSession?.id]);
+
+  useEffect(() => {
+    const currentProjectKey = selectedProject?.name ?? selectedProject?.fullPath ?? selectedProject?.path ?? null;
+    if (lastProjectKeyRef.current !== currentProjectKey && isInitialized) {
+      disconnectFromShell();
+    }
+
+    lastProjectKeyRef.current = currentProjectKey;
+  }, [disconnectFromShell, isInitialized, selectedProject?.fullPath, selectedProject?.name, selectedProject?.path]);
 
   return {
     terminalContainerRef,

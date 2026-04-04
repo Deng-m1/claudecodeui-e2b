@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Dispatch, KeyboardEvent, RefObject, SetStateAction } from 'react';
 import { api } from '../../../utils/api';
 import { escapeRegExp } from '../utils/chatFormatting';
-import type { Project } from '../../../types/app';
+import type { Project, ProjectSession } from '../../../types/app';
+import { isCloudSelection } from '../../../utils/sessionSelection';
 
 interface ProjectFileNode {
   name: string;
@@ -19,6 +20,7 @@ export interface MentionableFile {
 
 interface UseFileMentionsOptions {
   selectedProject: Project | null;
+  selectedSession: ProjectSession | null;
   input: string;
   setInput: Dispatch<SetStateAction<string>>;
   textareaRef: RefObject<HTMLTextAreaElement>;
@@ -46,7 +48,13 @@ const flattenFileTree = (files: ProjectFileNode[], basePath = ''): MentionableFi
   return flattened;
 };
 
-export function useFileMentions({ selectedProject, input, setInput, textareaRef }: UseFileMentionsOptions) {
+export function useFileMentions({
+  selectedProject,
+  selectedSession,
+  input,
+  setInput,
+  textareaRef,
+}: UseFileMentionsOptions) {
   const [fileList, setFileList] = useState<MentionableFile[]>([]);
   const [fileMentions, setFileMentions] = useState<string[]>([]);
   const [filteredFiles, setFilteredFiles] = useState<MentionableFile[]>([]);
@@ -62,7 +70,7 @@ export function useFileMentions({ selectedProject, input, setInput, textareaRef 
       const projectName = selectedProject?.name;
       setFileList([]);
       setFilteredFiles([]);
-      if (!projectName) {
+      if (!projectName || isCloudSelection(selectedProject, selectedSession)) {
         return;
       }
 
@@ -88,7 +96,7 @@ export function useFileMentions({ selectedProject, input, setInput, textareaRef 
     return () => {
       abortController.abort();
     };
-  }, [selectedProject?.name]);
+  }, [selectedProject?.name, selectedProject?.runtime, selectedSession]);
 
   useEffect(() => {
     const textBeforeCursor = input.slice(0, cursorPosition);

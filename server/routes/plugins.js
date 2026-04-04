@@ -19,6 +19,7 @@ import {
   stopPluginServer,
   getPluginPort,
   isPluginRunning,
+  isBuiltinPluginServer,
 } from '../utils/plugin-process-manager.js';
 
 const router = express.Router();
@@ -28,7 +29,7 @@ router.get('/', (req, res) => {
   try {
     const plugins = scanPlugins().map(p => ({
       ...p,
-      serverRunning: p.server ? isPluginRunning(p.name) : false,
+      serverRunning: p.server ? (p.enabled && (isBuiltinPluginServer(p.name) || isPluginRunning(p.name))) : false,
     }));
     res.json({ plugins });
   } catch (err) {
@@ -210,6 +211,10 @@ router.all('/:name/rpc/*', async (req, res) => {
 
   if (!/^[a-zA-Z0-9_-]+$/.test(pluginName)) {
     return res.status(400).json({ error: 'Invalid plugin name' });
+  }
+
+  if (isBuiltinPluginServer(pluginName)) {
+    return res.status(404).json({ error: 'Plugin does not expose HTTP RPC endpoints' });
   }
 
   let port = getPluginPort(pluginName);

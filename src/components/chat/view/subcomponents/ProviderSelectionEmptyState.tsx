@@ -8,10 +8,22 @@ import {
   CODEX_MODELS,
   GEMINI_MODELS,
 } from "../../../../../shared/modelConstants";
-import type { ProjectSession, RuntimeMode, SessionProvider } from "../../../../types/app";
+import type { Project, ProjectSession, RuntimeMode, SessionProvider } from "../../../../types/app";
+import { isCloudProject as isResolvedCloudProject } from '../../../../utils/sessionSelection';
 import { NextTaskBanner } from "../../../task-master";
+import {
+  type GitHubBranch,
+  type GitHubRepo,
+  fetchGitHubBranches,
+  fetchGitHubOAuthStatus,
+  fetchGitHubRepos,
+  mergeGitHubRepos,
+  matchesGitHubRepoQuery,
+  resolveGitHubBranchSelection,
+} from "../../../../utils/github";
 
 type ProviderSelectionEmptyStateProps = {
+  selectedProject: Project | null;
   selectedSession: ProjectSession | null;
   currentSessionId: string | null;
   provider: SessionProvider;
@@ -31,18 +43,6 @@ type ProviderSelectionEmptyStateProps = {
   isTaskMasterInstalled: boolean | null;
   onShowAllTasks?: (() => void) | null;
   setInput: React.Dispatch<React.SetStateAction<string>>;
-};
-
-type GitHubRepo = {
-  full_name: string;
-  name: string;
-  owner: { login: string; avatar_url: string };
-  private: boolean;
-  default_branch: string;
-};
-
-type GitHubBranch = {
-  name: string;
 };
 
 type ProviderDef = {
@@ -138,6 +138,7 @@ function E2BCloudPanel({
 }) {
   const { t } = useTranslation("chat");
   const [repos, setRepos] = useState<GitHubRepo[]>([]);
+  const [repoCatalog, setRepoCatalog] = useState<GitHubRepo[]>([]);
   const [branches, setBranches] = useState<GitHubBranch[]>([]);
   const [selectedRepo, setSelectedRepo] = useState<GitHubRepo | null>(null);
   const [selectedBranch, setSelectedBranch] = useState("");
@@ -149,58 +150,110 @@ function E2BCloudPanel({
   const [showRepoDropdown, setShowRepoDropdown] = useState(false);
 
   useEffect(() => {
-    fetch("/api/github/oauth/status", { credentials: "include" })
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.connected) {
-          setGithubConnected(true);
-          fetchRepos("");
+    let cancelled = false;
+
+    const syncGitHubConnection = async () => {
+      try {
+        const connected = await fetchGitHubOAuthStatus();
+        if (cancelled) {
+          return;
         }
-      })
-      .catch(() => {});
+
+        setGithubConnected(connected);
+        if (!connected) {
+          setRepos([]);
+          setRepoCatalog([]);
+          setBranches([]);
+          setSelectedRepo(null);
+          setSelectedBranch("");
+        }
+      } catch {
+        if (cancelled) {
+          return;
+        }
+
+        setGithubConnected(false);
+        setRepos([]);
+        setRepoCatalog([]);
+        setBranches([]);
+        setSelectedRepo(null);
+        setSelectedBranch("");
+      }
+    };
+
+    const handleOAuthSuccess = (event: MessageEvent) => {
+      if (event.data?.type === "github-oauth-success") {
+        void syncGitHubConnection();
+      }
+    };
+
+    void syncGitHubConnection();
+    window.addEventListener("message", handleOAuthSuccess);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener("message", handleOAuthSuccess);
+    };
   }, []);
 
-  const fetchRepos = useCallback((search: string) => {
+  const fetchRepos = useCallback(async (search: string) => {
     setIsLoadingRepos(true);
-    const q = search ? `?search=${encodeURIComponent(search)}` : "";
-    fetch(`/api/github/repos${q}`, { credentials: "include" })
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.success) setRepos(d.repos || []);
-      })
-      .catch(() => {})
-      .finally(() => setIsLoadingRepos(false));
+    try {
+      const nextRepos = await fetchGitHubRepos(search);
+      setRepos(nextRepos);
+      setRepoCatalog((currentRepos) => mergeGitHubRepos(currentRepos, nextRepos));
+    } catch (error) {
+      console.error("Failed to load repositories:", error);
+      setRepos([]);
+    } finally {
+      setIsLoadingRepos(false);
+    }
   }, []);
 
-  const fetchBranches = useCallback((owner: string, repo: string) => {
+  const fetchBranches = useCallback(async (repo: GitHubRepo, preferredBranch?: string) => {
     setIsLoadingBranches(true);
-    fetch(`/api/github/repos/${owner}/${repo}/branches`, { credentials: "include" })
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.success) setBranches(d.branches || []);
-      })
-      .catch(() => {})
-      .finally(() => setIsLoadingBranches(false));
+    try {
+      const { branches: nextBranches, defaultBranch } = await fetchGitHubBranches(repo);
+      setBranches(nextBranches);
+      setSelectedBranch(resolveGitHubBranchSelection(preferredBranch, nextBranches, defaultBranch));
+    } catch (error) {
+      console.error("Failed to load branches:", error);
+      setBranches([]);
+      setSelectedBranch(preferredBranch || repo.defaultBranch || "");
+    } finally {
+      setIsLoadingBranches(false);
+    }
   }, []);
+
+  useEffect(() => {
+    if (!githubConnected) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void fetchRepos(repoSearch);
+    }, 180);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [fetchRepos, githubConnected, repoSearch]);
 
   const handleRepoSelect = (repo: GitHubRepo) => {
     setSelectedRepo(repo);
-    setSelectedBranch(repo.default_branch);
     setShowRepoDropdown(false);
-    setRepoSearch(repo.full_name);
-    fetchBranches(repo.owner.login, repo.name);
+    setRepoSearch(repo.fullName);
+    void fetchBranches(repo, repo.defaultBranch);
   };
 
   const handleStartCloud = async () => {
     if (!selectedRepo) return;
     setIsCreatingSandbox(true);
     try {
-      const repoUrl = `https://github.com/${selectedRepo.full_name}.git`;
+      const repoUrl = selectedRepo.cloneUrl;
       const res = await fetch("/api/e2b/sandbox/create-with-repo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ repoUrl, branch: selectedBranch }),
+        body: JSON.stringify({ repoUrl, branch: selectedBranch || selectedRepo.defaultBranch }),
       });
       const data = await res.json();
       if (data.success) {
@@ -239,8 +292,8 @@ function E2BCloudPanel({
   const modelConfig = getModelConfig(provider);
   const currentModel = getModelValue(provider, claudeModel, cursorModel, codexModel, geminiModel);
 
-  const filteredRepos = repos.filter(
-    (r) => !repoSearch || r.full_name.toLowerCase().includes(repoSearch.toLowerCase()),
+  const filteredRepos = mergeGitHubRepos(repos, repoCatalog).filter(
+    (repo) => matchesGitHubRepoQuery(repo, repoSearch),
   );
 
   if (!githubConnected) {
@@ -285,9 +338,14 @@ function E2BCloudPanel({
               type="text"
               value={repoSearch}
               onChange={(e) => {
-                setRepoSearch(e.target.value);
+                const nextSearch = e.target.value;
+                setRepoSearch(nextSearch);
                 setShowRepoDropdown(true);
-                fetchRepos(e.target.value);
+                if (selectedRepo && nextSearch.trim() !== selectedRepo.fullName) {
+                  setSelectedRepo(null);
+                  setBranches([]);
+                  setSelectedBranch("");
+                }
               }}
               onFocus={() => setShowRepoDropdown(true)}
               placeholder={t("providerSelection.e2bCloud.searchRepos", {
@@ -308,17 +366,17 @@ function E2BCloudPanel({
               ) : (
                 filteredRepos.slice(0, 20).map((repo) => (
                   <button
-                    key={repo.full_name}
+                    key={repo.fullName}
                     onClick={() => handleRepoSelect(repo)}
                     className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-accent"
                   >
                     <img
-                      src={repo.owner.avatar_url}
+                      src={repo.owner.avatarUrl}
                       alt=""
                       className="h-5 w-5 shrink-0 rounded-full"
                     />
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium text-foreground">{repo.full_name}</p>
+                      <p className="truncate text-sm font-medium text-foreground">{repo.fullName}</p>
                     </div>
                     {repo.private && (
                       <span className="shrink-0 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
@@ -346,6 +404,11 @@ function E2BCloudPanel({
               disabled={isLoadingBranches}
               className="w-full cursor-pointer appearance-none rounded-lg border border-border/60 bg-card px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted/50 focus:outline-none focus:ring-2 focus:ring-sky-500/20"
             >
+              {!isLoadingBranches && branches.length === 0 && (
+                <option value={selectedBranch || selectedRepo.defaultBranch || ""}>
+                  {selectedBranch || selectedRepo.defaultBranch || "Select a repository first"}
+                </option>
+              )}
               {branches.map((b) => (
                 <option key={b.name} value={b.name}>
                   {b.name}
@@ -425,6 +488,7 @@ function E2BCloudPanel({
 }
 
 export default function ProviderSelectionEmptyState({
+  selectedProject,
   selectedSession,
   currentSessionId,
   provider,
@@ -446,6 +510,7 @@ export default function ProviderSelectionEmptyState({
   setInput,
 }: ProviderSelectionEmptyStateProps) {
   const { t } = useTranslation("chat");
+  const isCloudProject = isResolvedCloudProject(selectedProject);
   const nextTaskPrompt = t("tasks.nextTaskPrompt", {
     defaultValue: "Start the next task",
   });
@@ -480,9 +545,133 @@ export default function ProviderSelectionEmptyState({
     codexModel,
     geminiModel,
   );
+  const readyPrompt =
+    provider === "cursor"
+      ? t("providerSelection.readyPrompt.cursor", { model: cursorModel })
+      : provider === "codex"
+        ? t("providerSelection.readyPrompt.codex", { model: codexModel })
+        : provider === "gemini"
+          ? t("providerSelection.readyPrompt.gemini", { model: geminiModel })
+          : t("providerSelection.readyPrompt.claude", { model: claudeModel });
+  const repoUrl = typeof selectedProject?.cloud?.repoUrl === "string" ? selectedProject.cloud.repoUrl : "";
+  const branch = typeof selectedProject?.cloud?.branch === "string" ? selectedProject.cloud.branch : "";
+  const repoName = repoUrl ? repoUrl.replace(/\/+$/, "").replace(/\.git$/, "").split("/").pop() : "";
+
+  const providerCards = (
+    <div className="mb-6 grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-2.5">
+      {PROVIDERS.map((p) => {
+        const active = provider === p.id;
+        return (
+          <button
+            key={p.id}
+            onClick={() => selectProvider(p.id)}
+            className={`
+              relative flex flex-col items-center gap-2.5 rounded-xl border-[1.5px] px-2
+              pb-4 pt-5 transition-all duration-150
+              active:scale-[0.97]
+              ${
+                active
+                  ? `${p.accent} ${p.ring} bg-card shadow-sm ring-2`
+                  : "border-border bg-card/60 hover:border-border/80 hover:bg-card"
+              }
+            `}
+          >
+            <SessionProviderLogo
+              provider={p.id}
+              className={`h-9 w-9 transition-transform duration-150 ${active ? "scale-110" : ""}`}
+            />
+            <div className="text-center">
+              <p className="text-[13px] font-semibold leading-none text-foreground">
+                {p.name}
+              </p>
+              <p className="mt-1 text-[10px] leading-tight text-muted-foreground">
+                {t(p.infoKey)}
+              </p>
+            </div>
+            {active && (
+              <div
+                className={`absolute -right-1 -top-1 h-[18px] w-[18px] rounded-full ${p.check} flex items-center justify-center shadow-sm`}
+              >
+                <Check className="h-2.5 w-2.5" strokeWidth={3} />
+              </div>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  const modelPicker = (
+    <div
+      className={`transition-all duration-200 ${provider ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-1 opacity-0"}`}
+    >
+      <div className="mb-5 flex items-center justify-center gap-2">
+        <span className="text-sm text-muted-foreground">
+          {t("providerSelection.selectModel")}
+        </span>
+        <div className="relative">
+          <select
+            value={currentModel}
+            onChange={(e) => handleModelChange(e.target.value)}
+            tabIndex={-1}
+            className="cursor-pointer appearance-none rounded-lg border border-border/60 bg-muted/50 py-1.5 pl-3 pr-7 text-sm font-medium text-foreground transition-colors hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/20"
+          >
+            {modelConfig.OPTIONS.map(
+              ({ value, label }: { value: string; label: string }) => (
+                <option key={value + label} value={value}>
+                  {label}
+                </option>
+              ),
+            )}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+        </div>
+      </div>
+
+      <p className="text-center text-sm text-muted-foreground/70">{readyPrompt}</p>
+    </div>
+  );
 
   /* ── New session — provider picker ── */
   if (!selectedSession && !currentSessionId) {
+    if (isCloudProject) {
+      return (
+        <div className="flex h-full items-center justify-center px-4">
+          <div className="w-full max-w-2xl">
+            <div className="mb-6 text-center">
+              <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-sky-300/40 bg-sky-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-sky-700 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-300">
+                <Cloud className="h-3.5 w-3.5" />
+                {t("providerSelection.e2bCloud.title", { defaultValue: "Cloud Project" })}
+              </div>
+              <h2 className="text-lg font-semibold tracking-tight text-foreground sm:text-xl">
+                {t("providerSelection.e2bCloud.start", { defaultValue: "Start Cloud Session" })}
+              </h2>
+              <p className="mt-1 text-[13px] text-muted-foreground">
+                {selectedProject?.displayName}
+              </p>
+              {(repoName || branch) && (
+                <p className="mt-2 text-xs text-muted-foreground/80">
+                  {[repoName, branch ? `branch: ${branch}` : ""].filter(Boolean).join(" • ")}
+                </p>
+              )}
+            </div>
+
+            {providerCards}
+            {modelPicker}
+
+            {provider && tasksEnabled && isTaskMasterInstalled && (
+              <div className="mt-5">
+                <NextTaskBanner
+                  onStartTask={() => setInput(nextTaskPrompt)}
+                  onShowAllTasks={onShowAllTasks}
+                />
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="flex h-full items-center justify-center px-4">
         <div className="w-full max-w-lg">
@@ -534,94 +723,10 @@ export default function ProviderSelectionEmptyState({
               </div>
 
               {/* Provider cards */}
-              <div className="mb-6 grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-2.5">
-                {PROVIDERS.map((p) => {
-                  const active = provider === p.id;
-                  return (
-                    <button
-                      key={p.id}
-                      onClick={() => selectProvider(p.id)}
-                      className={`
-                        relative flex flex-col items-center gap-2.5 rounded-xl border-[1.5px] px-2
-                        pb-4 pt-5 transition-all duration-150
-                        active:scale-[0.97]
-                        ${
-                          active
-                            ? `${p.accent} ${p.ring} bg-card shadow-sm ring-2`
-                            : "border-border bg-card/60 hover:border-border/80 hover:bg-card"
-                        }
-                      `}
-                    >
-                      <SessionProviderLogo
-                        provider={p.id}
-                        className={`h-9 w-9 transition-transform duration-150 ${active ? "scale-110" : ""}`}
-                      />
-                      <div className="text-center">
-                        <p className="text-[13px] font-semibold leading-none text-foreground">
-                          {p.name}
-                        </p>
-                        <p className="mt-1 text-[10px] leading-tight text-muted-foreground">
-                          {t(p.infoKey)}
-                        </p>
-                      </div>
-                      {active && (
-                        <div
-                          className={`absolute -right-1 -top-1 h-[18px] w-[18px] rounded-full ${p.check} flex items-center justify-center shadow-sm`}
-                        >
-                          <Check className="h-2.5 w-2.5" strokeWidth={3} />
-                        </div>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
+              {providerCards}
 
               {/* Model picker */}
-              <div
-                className={`transition-all duration-200 ${provider ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-1 opacity-0"}`}
-              >
-                <div className="mb-5 flex items-center justify-center gap-2">
-                  <span className="text-sm text-muted-foreground">
-                    {t("providerSelection.selectModel")}
-                  </span>
-                  <div className="relative">
-                    <select
-                      value={currentModel}
-                      onChange={(e) => handleModelChange(e.target.value)}
-                      tabIndex={-1}
-                      className="cursor-pointer appearance-none rounded-lg border border-border/60 bg-muted/50 py-1.5 pl-3 pr-7 text-sm font-medium text-foreground transition-colors hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/20"
-                    >
-                      {modelConfig.OPTIONS.map(
-                        ({ value, label }: { value: string; label: string }) => (
-                          <option key={value + label} value={value}>
-                            {label}
-                          </option>
-                        ),
-                      )}
-                    </select>
-                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
-                  </div>
-                </div>
-
-                <p className="text-center text-sm text-muted-foreground/70">
-                  {
-                    {
-                      claude: t("providerSelection.readyPrompt.claude", {
-                        model: claudeModel,
-                      }),
-                      cursor: t("providerSelection.readyPrompt.cursor", {
-                        model: cursorModel,
-                      }),
-                      codex: t("providerSelection.readyPrompt.codex", {
-                        model: codexModel,
-                      }),
-                      gemini: t("providerSelection.readyPrompt.gemini", {
-                        model: geminiModel,
-                      }),
-                    }[provider]
-                  }
-                </p>
-              </div>
+              {modelPicker}
 
               {/* Task banner */}
               {provider && tasksEnabled && isTaskMasterInstalled && (

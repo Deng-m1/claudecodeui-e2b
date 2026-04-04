@@ -8,6 +8,7 @@ import SettingsSidebar from '../view/SettingsSidebar';
 import AgentsSettingsTab from '../view/tabs/agents-settings/AgentsSettingsTab';
 import AppearanceSettingsTab from '../view/tabs/AppearanceSettingsTab';
 import CredentialsSettingsTab from '../view/tabs/api-settings/CredentialsSettingsTab';
+import AuthCenterSettingsTab from '../view/tabs/auth-center/AuthCenterSettingsTab';
 import GitSettingsTab from '../view/tabs/git-settings/GitSettingsTab';
 import NotificationsSettingsTab from '../view/tabs/NotificationsSettingsTab';
 import TasksSettingsTab from '../view/tabs/tasks-settings/TasksSettingsTab';
@@ -36,6 +37,8 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
     setCursorPermissions,
     codexPermissionMode,
     setCodexPermissionMode,
+    codexFeatureToggles,
+    setCodexFeatureToggles,
     mcpServers,
     cursorMcpServers,
     codexMcpServers,
@@ -112,10 +115,15 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
       : loginProvider === 'codex'
         ? codexAuthStatus.authenticated
         : false;
+  const isWideLayout = activeTab === 'authCenter';
 
   return (
     <div className="modal-backdrop fixed inset-0 z-[9999] flex items-center justify-center bg-background/80 backdrop-blur-sm md:p-4">
-      <div className="flex h-full w-full flex-col overflow-hidden border border-border bg-background shadow-2xl md:h-[90vh] md:max-w-4xl md:rounded-xl">
+      <div
+        className={`flex h-full w-full flex-col overflow-hidden border border-border bg-background shadow-2xl md:rounded-xl ${
+          isWideLayout ? 'md:h-[94vh] md:max-w-[96vw] xl:max-w-[1440px]' : 'md:h-[90vh] md:max-w-4xl'
+        }`}
+      >
         {/* Header */}
         <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-4 py-3 md:px-5">
           <h2 className="text-base font-semibold text-foreground">{t('title')}</h2>
@@ -172,6 +180,8 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
                   onCursorPermissionsChange={setCursorPermissions}
                   codexPermissionMode={codexPermissionMode}
                   onCodexPermissionModeChange={setCodexPermissionMode}
+                  codexFeatureToggles={codexFeatureToggles}
+                  onCodexFeatureTogglesChange={setCodexFeatureToggles}
                   geminiPermissionMode={geminiPermissionMode}
                   onGeminiPermissionModeChange={setGeminiPermissionMode}
                   mcpServers={mcpServers}
@@ -205,6 +215,8 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
             )}
 
               {activeTab === 'api' && <CredentialsSettingsTab />}
+
+              {activeTab === 'authCenter' && <AuthCenterSettingsTab projects={projects} />}
 
               {activeTab === 'plugins' && <PluginSettingsTab />}
 

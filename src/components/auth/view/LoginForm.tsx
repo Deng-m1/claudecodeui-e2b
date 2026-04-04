@@ -23,7 +23,7 @@ const initialState: LoginFormState = {
  */
 export default function LoginForm() {
   const { t } = useTranslation('auth');
-  const { login } = useAuth();
+  const { login, registrationDisabled } = useAuth();
 
   const [formState, setFormState] = useState<LoginFormState>(initialState);
   const [errorMessage, setErrorMessage] = useState('');
@@ -58,9 +58,13 @@ export default function LoginForm() {
     <AuthScreenLayout
       title={t('login.title')}
       description={t('login.description')}
-      footerText="Enter your credentials to access Claude Code UI"
+      footerText={
+        registrationDisabled
+          ? 'Registration is disabled. Only the existing owner account can sign in.'
+          : 'Enter your credentials to access Claude Code UI'
+      }
     >
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form onSubmit={handleSubmit} className="space-y-4" data-testid="login-form">
         <AuthInputField
           id="username"
           label={t('login.username')}
@@ -86,6 +90,7 @@ export default function LoginForm() {
 
         <button
           type="submit"
+          data-testid="login-submit"
           disabled={isSubmitting}
           className="w-full rounded-md bg-blue-600 px-4 py-2 font-medium text-white transition-colors duration-200 hover:bg-blue-700 disabled:bg-blue-400"
         >

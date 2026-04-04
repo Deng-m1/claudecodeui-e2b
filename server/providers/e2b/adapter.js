@@ -10,10 +10,22 @@
 import { createNormalizedMessage } from '../types.js';
 
 const PROVIDER = 'e2b';
+const ACP_TOOL_KIND_LABELS = {
+  read: 'Read',
+  edit: 'Edit',
+  delete: 'Delete',
+  move: 'Move',
+  search: 'Search',
+  execute: 'Bash',
+  think: 'Think',
+  fetch: 'Fetch',
+  switch_mode: 'SwitchMode',
+  other: 'Tool',
+};
 
 /**
  * Determine the originating sub-provider from the agent field.
- * @param {string} agent - Agent identifier from sandbox-agent (e.g. 'claude-code', 'codex')
+ * @param {string} agent - Agent identifier from sandbox-agent (e.g. 'claude', 'codex')
  * @returns {string}
  */
 function resolveSubProvider(agent) {
@@ -23,6 +35,185 @@ function resolveSubProvider(agent) {
   if (lower.includes('codex') || lower.includes('openai')) return 'codex';
   if (lower.includes('cursor')) return 'cursor';
   return PROVIDER;
+}
+
+function formatToolKindLabel(kind) {
+  if (!kind || typeof kind !== 'string') {
+    return '';
+  }
+
+  const normalized = kind.trim().toLowerCase();
+  if (!normalized) {
+    return '';
+  }
+
+  if (ACP_TOOL_KIND_LABELS[normalized]) {
+    return ACP_TOOL_KIND_LABELS[normalized];
+  }
+
+  return normalized
+    .split('_')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join('');
+}
+
+function derivePermissionReplies(options) {
+  if (!Array.isArray(options)) {
+    return [];
+  }
+
+  const replies = new Set();
+  for (const option of options) {
+    const kind =
+      typeof option?.kind === 'string' && option.kind.trim()
+        ? option.kind.trim().toLowerCase()
+        : '';
+
+    if (kind === 'allow_once') {
+      replies.add('once');
+    } else if (kind === 'allow_always') {
+      replies.add('always');
+    } else if (kind === 'reject_once' || kind === 'reject_always') {
+      replies.add('reject');
+    }
+  }
+
+  return Array.from(replies);
+}
+
+export function coalesceHistoryMessages(messages, sessionId) {
+  const coalesced = [];
+  let pendingUser = null;
+  let pendingAssistant = null;
+
+  const flushUser = () => {
+    if (!pendingUser?.content) {
+      pendingUser = null;
+      return;
+    }
+
+    coalesced.push(
+      createNormalizedMessage({
+        id: pendingUser.id,
+        sessionId,
+        timestamp: pendingUser.timestamp,
+        provider: pendingUser.provider,
+        kind: 'text',
+        role: 'user',
+        content: pendingUser.content,
+      }),
+    );
+    pendingUser = null;
+  };
+
+  const flushAssistant = () => {
+    if (!pendingAssistant?.content) {
+      pendingAssistant = null;
+      return;
+    }
+
+    coalesced.push(
+      createNormalizedMessage({
+        id: pendingAssistant.id,
+        sessionId,
+        timestamp: pendingAssistant.timestamp,
+        provider: pendingAssistant.provider,
+        kind: 'text',
+        role: 'assistant',
+        content: pendingAssistant.content,
+      }),
+    );
+    pendingAssistant = null;
+  };
+
+  for (const msg of messages) {
+    if (msg.kind === 'text' && msg.role === 'user') {
+      flushAssistant();
+      if (!pendingUser) {
+        pendingUser = {
+          id: `${msg.id || 'e2b_user'}_coalesced`,
+          timestamp: msg.timestamp,
+          provider: msg.provider,
+          content: '',
+        };
+      }
+      pendingUser.content += msg.content || '';
+      continue;
+    }
+
+    if (msg.kind === 'stream_delta') {
+      flushUser();
+      if (!pendingAssistant) {
+        pendingAssistant = {
+          id: `${msg.id || 'e2b_assistant'}_coalesced`,
+          timestamp: msg.timestamp,
+          provider: msg.provider,
+          content: '',
+        };
+      }
+      pendingAssistant.content += msg.content || '';
+      continue;
+    }
+
+    if (msg.kind === 'complete') {
+      // E2B event history can contain extra completion control frames around a
+      // single prompt turn. They are not rendered in the UI and should not
+      // split a single assistant response into multiple text messages.
+      continue;
+    }
+
+    flushUser();
+    flushAssistant();
+    coalesced.push(msg);
+  }
+
+  flushUser();
+  flushAssistant();
+
+  return coalesced;
+}
+
+export function normalizeE2BToolCall(toolCall, fallbackId = '') {
+  const legacyName =
+    typeof toolCall?.name === 'string' && toolCall.name.trim()
+      ? toolCall.name.trim()
+      : typeof toolCall?.tool === 'string' && toolCall.tool.trim()
+        ? toolCall.tool.trim()
+        : '';
+
+  const toolKind =
+    typeof toolCall?.kind === 'string' && toolCall.kind.trim()
+      ? toolCall.kind.trim()
+      : '';
+
+  const toolTitle =
+    typeof toolCall?.title === 'string' && toolCall.title.trim()
+      ? toolCall.title.trim()
+      : '';
+
+  const toolName = legacyName || formatToolKindLabel(toolKind) || toolTitle || 'unknown';
+  const toolInput = toolCall?.rawInput ?? toolCall?.input ?? toolCall?.arguments ?? {};
+  const toolId = toolCall?.toolCallId || toolCall?.id || fallbackId;
+
+  return {
+    toolName,
+    toolInput,
+    toolId,
+    toolKind: toolKind || null,
+    toolTitle: toolTitle || null,
+  };
+}
+
+export function buildE2BPermissionContext(request) {
+  const normalized = normalizeE2BToolCall(request?.toolCall, request?.id || '');
+  return {
+    availableReplies: derivePermissionReplies(request?.options),
+    options: request?.options,
+    toolKind: normalized.toolKind,
+    toolTitle: normalized.toolTitle,
+    toolCallId: normalized.toolId || null,
+  };
 }
 
 /**
@@ -49,7 +240,10 @@ export function normalizeEvent(event, sessionId, agent) {
 
   // ACP notification: session/update
   if (payload.method === 'session/update' && payload.params) {
-    const update = payload.params;
+    const update =
+      payload.params?.update && typeof payload.params.update === 'object'
+        ? payload.params.update
+        : payload.params;
     const updateType = update.sessionUpdate;
 
     switch (updateType) {
@@ -102,15 +296,16 @@ export function normalizeEvent(event, sessionId, agent) {
       case 'tool_call': {
         const toolCall = update.toolCall;
         if (toolCall) {
+          const normalizedTool = normalizeE2BToolCall(toolCall, event.id);
           messages.push(createNormalizedMessage({
             id: event.id || undefined,
             sessionId,
             timestamp: ts,
             provider,
             kind: 'tool_use',
-            toolName: toolCall.name || toolCall.tool || 'unknown',
-            toolInput: toolCall.input ?? toolCall.arguments ?? {},
-            toolId: toolCall.id || event.id,
+            toolName: normalizedTool.toolName,
+            toolInput: normalizedTool.toolInput,
+            toolId: normalizedTool.toolId,
           }));
         }
         break;
@@ -192,6 +387,7 @@ export function normalizeEvent(event, sessionId, agent) {
   // ACP notification: session/requestPermission
   if (payload.method === 'session/requestPermission' && payload.params) {
     const perm = payload.params;
+    const normalizedTool = normalizeE2BToolCall(perm.toolCall, event.id);
     messages.push(createNormalizedMessage({
       id: event.id || undefined,
       sessionId,
@@ -199,9 +395,12 @@ export function normalizeEvent(event, sessionId, agent) {
       provider,
       kind: 'permission_request',
       requestId: perm.id || event.id,
-      toolName: perm.toolCall?.name || perm.toolCall?.tool || 'unknown',
-      input: perm.toolCall?.input || perm.toolCall?.arguments || {},
-      context: perm,
+      toolName: normalizedTool.toolName,
+      input: normalizedTool.toolInput,
+      context: {
+        ...buildE2BPermissionContext(perm),
+        rawRequest: perm,
+      },
     }));
   }
 
@@ -228,17 +427,29 @@ export function normalizeEvent(event, sessionId, agent) {
 function extractTextFromContent(content) {
   if (!content) return '';
   if (typeof content === 'string') return content;
+  if (typeof content?.text === 'string') return content.text;
+  if (typeof content?.content === 'string') return content.content;
 
   // ACP ContentChunk has { content: ContentBlock[] }
-  const blocks = Array.isArray(content) ? content : content.content || content.blocks || [];
+  const blocks = Array.isArray(content)
+    ? content
+    : Array.isArray(content.content)
+      ? content.content
+      : Array.isArray(content.blocks)
+        ? content.blocks
+        : Array.isArray(content.items)
+          ? content.items
+          : content.type === 'content' && Array.isArray(content.content)
+            ? content.content
+            : [];
   if (!Array.isArray(blocks)) {
     if (typeof blocks === 'string') return blocks;
     return '';
   }
 
   return blocks
-    .filter(b => b && (b.type === 'text' || !b.type))
-    .map(b => b.text || b.content || '')
+    .map((block) => extractTextFromContent(block))
+    .filter(Boolean)
     .join('');
 }
 
@@ -268,6 +479,59 @@ function extractToolContent(content) {
   return JSON.stringify(content);
 }
 
+function paginateMessages(messages, { limit = null, offset = 0 } = {}) {
+  if (limit === null || limit === undefined) {
+    return {
+      messages,
+      total: messages.length,
+      hasMore: false,
+      offset: 0,
+      limit: null,
+    };
+  }
+
+  const safeLimit = Math.max(0, Number(limit) || 0);
+  const safeOffset = Math.max(0, Number(offset) || 0);
+  const total = messages.length;
+  const startIndex = Math.max(0, total - safeOffset - safeLimit);
+  const endIndex = Math.max(startIndex, total - safeOffset);
+
+  return {
+    messages: messages.slice(startIndex, endIndex),
+    total,
+    hasMore: startIndex > 0,
+    offset: safeOffset,
+    limit: safeLimit,
+  };
+}
+
+function parsePersistedMessageRow(row) {
+  if (typeof row?.message_json !== 'string' || !row.message_json.trim()) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(row.message_json);
+  } catch {
+    return null;
+  }
+}
+
+async function fetchPersistedHistory(sessionId, opts = {}) {
+  const { e2bSessionMessagesDb } = await import('../../database/db.js');
+  const rows = e2bSessionMessagesDb.getBySessionId(sessionId);
+  const persisted = rows
+    .map(parsePersistedMessageRow)
+    .filter((message) => message && typeof message === 'object');
+
+  if (persisted.length === 0) {
+    return null;
+  }
+
+  const coalesced = coalesceHistoryMessages(persisted, sessionId);
+  return paginateMessages(coalesced, opts);
+}
+
 /**
  * Fetch session history from sandbox-agent.
  * @param {string} sessionId
@@ -275,7 +539,24 @@ function extractToolContent(content) {
  * @returns {Promise<import('../types.js').FetchHistoryResult>}
  */
 export async function fetchHistory(sessionId, opts = {}) {
-  const { getSandboxClient } = await import('./sandbox-manager.js');
+  const { getSandboxClient, ensureSandboxConnected } = await import('./sandbox-manager.js');
+  const { e2bSessionDb, e2bSessionMessagesDb } = await import('../../database/db.js');
+  const { extractSandboxIdFromProjectName } = await import('./project-utils.js');
+
+  const persisted = await fetchPersistedHistory(sessionId, opts);
+  if (persisted) {
+    return persisted;
+  }
+
+  const sandboxId =
+    extractSandboxIdFromProjectName(opts.projectName || '') ||
+    e2bSessionDb.getBySessionId(sessionId)?.sandbox_id ||
+    null;
+
+  if (sandboxId) {
+    await ensureSandboxConnected(sandboxId);
+  }
+
   const client = getSandboxClient();
 
   if (!client) {
@@ -288,28 +569,58 @@ export async function fetchHistory(sessionId, opts = {}) {
       return { messages: [], total: 0, hasMore: false, offset: 0, limit: null };
     }
 
-    const eventsPage = await client.getEvents({ sessionId, limit: opts.limit || 200 });
+    const eventsPage = await client.getEvents({ sessionId, limit: 500 });
+    const sortedEvents = [...eventsPage.items].sort((left, right) => {
+      const leftIndex = typeof left?.eventIndex === 'number' ? left.eventIndex : Number.MAX_SAFE_INTEGER;
+      const rightIndex = typeof right?.eventIndex === 'number' ? right.eventIndex : Number.MAX_SAFE_INTEGER;
+
+      if (leftIndex !== rightIndex) {
+        return leftIndex - rightIndex;
+      }
+
+      const leftTs = left?.createdAt ? new Date(left.createdAt).getTime() : 0;
+      const rightTs = right?.createdAt ? new Date(right.createdAt).getTime() : 0;
+      return leftTs - rightTs;
+    });
     const normalized = [];
 
-    for (const event of eventsPage.items) {
+    for (const event of sortedEvents) {
       const msgs = normalizeEvent(event, sessionId, session.agent);
       normalized.push(...msgs);
     }
 
-    return {
-      messages: normalized,
-      total: normalized.length,
-      hasMore: !!eventsPage.nextCursor,
-      offset: opts.offset || 0,
-      limit: opts.limit || null,
-    };
+    const mergedHistory = coalesceHistoryMessages(normalized, sessionId);
+
+    for (const message of mergedHistory) {
+      e2bSessionMessagesDb.append(sessionId, message);
+    }
+
+    return paginateMessages(mergedHistory, opts);
   } catch (error) {
     console.error('[E2B] Error fetching history:', error.message);
     return { messages: [], total: 0, hasMore: false, offset: 0, limit: null };
   }
 }
 
+async function loadHistorySnapshot(sessionId, opts = {}) {
+  const history = await fetchHistory(sessionId, {
+    ...opts,
+    limit: null,
+    offset: 0,
+  });
+  const messages = Array.isArray(history?.messages) ? history.messages : [];
+  const oldestId = messages[0]?.id || '';
+  const newestId = messages[messages.length - 1]?.id || '';
+
+  return {
+    messages,
+    tokenUsage: history?.tokenUsage || null,
+    fingerprint: `e2b:${sessionId}:${messages.length}:${oldestId}:${newestId}`,
+  };
+}
+
 export const e2bAdapter = {
   fetchHistory,
+  loadHistorySnapshot,
   normalizeMessage: normalizeEvent,
 };

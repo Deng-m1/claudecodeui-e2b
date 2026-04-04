@@ -39,6 +39,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [token, setToken] = useState<string | null>(() => readStoredToken());
   const [isLoading, setIsLoading] = useState(true);
   const [needsSetup, setNeedsSetup] = useState(false);
+  const [registrationDisabled, setRegistrationDisabled] = useState(false);
+  const [setupLocked, setSetupLocked] = useState(false);
   const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -81,13 +83,24 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
       const statusResponse = await api.auth.status();
       const statusPayload = await parseJsonSafely<AuthStatusPayload>(statusResponse);
+      setRegistrationDisabled(Boolean(statusPayload?.registrationDisabled));
+
+      if (statusPayload?.setupLocked) {
+        setNeedsSetup(false);
+        setSetupLocked(true);
+        clearSession();
+        return;
+      }
 
       if (statusPayload?.needsSetup) {
         setNeedsSetup(true);
+        setSetupLocked(false);
+        clearSession();
         return;
       }
 
       setNeedsSetup(false);
+      setSetupLocked(false);
 
       if (!token) {
         return;
@@ -119,6 +132,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
     if (IS_PLATFORM) {
       setUser({ username: 'platform-user' });
       setNeedsSetup(false);
+      setRegistrationDisabled(false);
+      setSetupLocked(false);
       void checkOnboardingStatus().finally(() => {
         setIsLoading(false);
       });
@@ -143,6 +158,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
         setSession(payload.user, payload.token);
         setNeedsSetup(false);
+        setSetupLocked(false);
         await checkOnboardingStatus();
         return { success: true };
       } catch (caughtError) {
@@ -169,6 +185,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
         setSession(payload.user, payload.token);
         setNeedsSetup(false);
+        setRegistrationDisabled(false);
+        setSetupLocked(false);
         await checkOnboardingStatus();
         return { success: true };
       } catch (caughtError) {
@@ -197,6 +215,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
       token,
       isLoading,
       needsSetup,
+      registrationDisabled,
+      setupLocked,
       hasCompletedOnboarding,
       error,
       login,
@@ -211,8 +231,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
       login,
       logout,
       needsSetup,
+      registrationDisabled,
       refreshOnboardingStatus,
       register,
+      setupLocked,
       token,
       user,
     ],

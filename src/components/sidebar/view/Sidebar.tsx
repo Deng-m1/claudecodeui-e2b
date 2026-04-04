@@ -6,7 +6,7 @@ import { useUiPreferences } from '../../../hooks/useUiPreferences';
 import { useSidebarController } from '../hooks/useSidebarController';
 import { useTaskMaster } from '../../../contexts/TaskMasterContext';
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
-import type { Project, SessionProvider } from '../../../types/app';
+import type { Project, RuntimeMode, SessionProvider } from '../../../types/app';
 import type { MCPServerStatus, SidebarProps } from '../types/types';
 import SidebarCollapsed from './subcomponents/SidebarCollapsed';
 import SidebarContent from './subcomponents/SidebarContent';
@@ -60,8 +60,10 @@ function Sidebar({
     editingSession,
     editingSessionName,
     searchFilter,
+    sessionProviderFilter,
     searchMode,
     setSearchMode,
+    setSessionProviderFilter,
     conversationResults,
     isSearching,
     searchProgress,
@@ -123,6 +125,20 @@ function Sidebar({
     document.body.classList.toggle('pwa-mode', isPWA);
   }, [isPWA]);
 
+  useEffect(() => {
+    const openProjectLauncher = () => {
+      setShowNewProject(true);
+    };
+
+    window.openProjectLauncher = openProjectLauncher;
+
+    return () => {
+      if (window.openProjectLauncher === openProjectLauncher) {
+        delete window.openProjectLauncher;
+      }
+    };
+  }, [setShowNewProject]);
+
   const handleProjectCreated = () => {
     if (window.refreshProjects) {
       void window.refreshProjects();
@@ -145,6 +161,7 @@ function Sidebar({
     loadingSessions,
     initialSessionsLoaded,
     currentTime,
+    sessionProviderFilter,
     editingSession,
     editingSessionName,
     deletingProjects,
@@ -177,8 +194,14 @@ function Sidebar({
       setEditingSession(null);
       setEditingSessionName('');
     },
-    onSaveEditingSession: (projectName: string, sessionId: string, summary: string, provider: SessionProvider) => {
-      void updateSessionSummary(projectName, sessionId, summary, provider);
+    onSaveEditingSession: (
+      projectName: string,
+      sessionId: string,
+      summary: string,
+      provider: SessionProvider,
+      runtime: RuntimeMode,
+    ) => {
+      void updateSessionSummary(projectName, sessionId, summary, provider, runtime);
     },
     t,
   };
@@ -193,6 +216,7 @@ function Sidebar({
         showNewProject={showNewProject}
         onCloseNewProject={() => setShowNewProject(false)}
         onProjectCreated={handleProjectCreated}
+        onOpenProject={onNewSession}
         deleteConfirmation={deleteConfirmation}
         onCancelDeleteProject={() => setDeleteConfirmation(null)}
         onConfirmDeleteProject={confirmDeleteProject}
@@ -231,6 +255,8 @@ function Sidebar({
               setSearchMode(mode);
               if (mode === 'projects') clearConversationResults();
             }}
+            sessionProviderFilter={sessionProviderFilter}
+            onSessionProviderFilterChange={setSessionProviderFilter}
             conversationResults={conversationResults}
             isSearching={isSearching}
             searchProgress={searchProgress}

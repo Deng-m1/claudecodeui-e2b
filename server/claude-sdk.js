@@ -14,7 +14,7 @@
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import crypto from 'crypto';
-import { promises as fs } from 'fs';
+import { promises as fs, readFileSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { CLAUDE_MODELS } from '../shared/modelConstants.js';
@@ -33,6 +33,27 @@ const pendingToolApprovals = new Map();
 const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10) || 55000;
 
 const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion']);
+
+function loadClaudeUserEnvOverrides() {
+  try {
+    const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+    const raw = readFileSync(settingsPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    const env = parsed?.env;
+
+    if (!env || typeof env !== 'object' || Array.isArray(env)) {
+      return {};
+    }
+
+    return Object.fromEntries(
+      Object.entries(env).filter(([, value]) => typeof value === 'string'),
+    );
+  } catch {
+    return {};
+  }
+}
+
+const CLAUDE_USER_ENV_OVERRIDES = loadClaudeUserEnvOverrides();
 
 function createRequestId() {
   if (typeof crypto.randomUUID === 'function') {
@@ -138,6 +159,29 @@ function matchesToolPermission(entry, toolName, input) {
   return false;
 }
 
+function buildPermissionSettingsOverride(options = {}) {
+  const { toolsSettings, permissionMode } = options;
+
+  const settings = toolsSettings || {
+    allowedTools: [],
+    disallowedTools: [],
+    skipPermissions: false
+  };
+
+  let defaultMode = 'default';
+  if (permissionMode === 'acceptEdits' || permissionMode === 'bypassPermissions' || permissionMode === 'plan' || permissionMode === 'dontAsk') {
+    defaultMode = permissionMode;
+  }
+
+  return {
+    permissions: {
+      allow: [...(settings.allowedTools || [])],
+      deny: [...(settings.disallowedTools || [])],
+      defaultMode,
+    },
+  };
+}
+
 /**
  * Maps CLI options to SDK-compatible options format
  * @param {Object} options - CLI options
@@ -204,8 +248,23 @@ function mapCliOptionsToSDK(options = {}) {
   };
 
   // Map setting sources for CLAUDE.md loading
-  // This loads CLAUDE.md from project, user (~/.config/claude/CLAUDE.md), and local directories
-  sdkOptions.settingSources = ['project', 'user', 'local'];
+  // Do not load the user settings scope directly: Claude merges permission arrays
+  // across scopes, so a global ~/.claude/settings.json allow rule (for example
+  // Bash(**)) can bypass canUseTool before the UI bridge ever sees the request.
+  // We still preserve user-level auth/base-url env vars below.
+  sdkOptions.settingSources = ['project', 'local'];
+
+  sdkOptions.env = {
+    ...CLAUDE_USER_ENV_OVERRIDES,
+    ...process.env,
+  };
+
+  // UI permission mode must override user-global Claude settings, otherwise
+  // ~/.claude/settings.json can silently force acceptEdits/Bash(**) and bypass
+  // this app's permission routing entirely.
+  sdkOptions.extraArgs = {
+    settings: JSON.stringify(buildPermissionSettingsOverride(options)),
+  };
 
   // Map resume session
   if (sessionId) {

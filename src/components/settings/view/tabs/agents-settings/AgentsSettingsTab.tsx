@@ -20,6 +20,8 @@ export default function AgentsSettingsTab({
   onCursorPermissionsChange,
   codexPermissionMode,
   onCodexPermissionModeChange,
+  codexFeatureToggles,
+  onCodexFeatureTogglesChange,
   geminiPermissionMode,
   onGeminiPermissionModeChange,
   mcpServers,
@@ -91,6 +93,8 @@ export default function AgentsSettingsTab({
           onCursorPermissionsChange={onCursorPermissionsChange}
           codexPermissionMode={codexPermissionMode}
           onCodexPermissionModeChange={onCodexPermissionModeChange}
+          codexFeatureToggles={codexFeatureToggles}
+          onCodexFeatureTogglesChange={onCodexFeatureTogglesChange}
           geminiPermissionMode={geminiPermissionMode}
           onGeminiPermissionModeChange={onGeminiPermissionModeChange}
           mcpServers={mcpServers}

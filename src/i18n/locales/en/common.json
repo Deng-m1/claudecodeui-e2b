@@ -93,7 +93,13 @@
     "createProjectDesktop": "Create a new project by clicking the folder icon in the sidebar",
     "newSession": "New Session",
     "untitledSession": "Untitled Session",
-    "projectFiles": "Project Files"
+    "projectFiles": "Project Files",
+    "forkedFrom": "Forked from {{id}}",
+    "forkedFromTooltip": "Forked from {{id}}",
+    "forks_one": "Has {{count}} fork",
+    "forks_other": "Has {{count}} forks",
+    "forksTooltip_one": "Has {{count}} fork",
+    "forksTooltip_other": "Has {{count}} forks"
   },
   "fileTree": {
     "loading": "Loading files...",
@@ -172,7 +178,20 @@
       "publicRepoInfo": "Public repositories don't require authentication. You can skip providing a token if cloning a public repo.",
       "noTokensHelp": "No stored tokens available. You can add tokens in Settings → API Keys for easier reuse.",
       "optionalTokenPublic": "GitHub Token (Optional for Public Repos)",
-      "tokenPublicPlaceholder": "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx (leave empty for public repos)"
+      "tokenPublicPlaceholder": "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx (leave empty for public repos)",
+      "browseFolders": "Browse folders",
+      "selectFolder": "Select Folder",
+      "showHiddenFolders": "Show hidden folders",
+      "hideHiddenFolders": "Hide hidden folders",
+      "createNewFolder": "Create new folder",
+      "newFolderName": "New folder name",
+      "createFolder": "Create",
+      "cancel": "Cancel",
+      "noSubfolders": "No subfolders found",
+      "currentPath": "Path:",
+      "useFolder": "Use this folder",
+      "pathInputPlaceholder": "Paste or type a folder path",
+      "goToPath": "Go"
     },
     "step3": {
       "reviewConfig": "Review Your Configuration",

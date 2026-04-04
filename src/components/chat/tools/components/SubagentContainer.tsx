@@ -1,5 +1,6 @@
 import React from 'react';
 import type { SubagentChildTool } from '../../types/types';
+import { normalizeToolDisplayCall } from '../../utils/toolNormalization';
 import { CollapsibleSection } from './CollapsibleSection';
 
 interface SubagentContainerProps {
@@ -13,11 +14,12 @@ interface SubagentContainerProps {
 }
 
 const getCompactToolDisplay = (toolName: string, toolInput: unknown): string => {
-  const input = typeof toolInput === 'string' ? (() => {
-    try { return JSON.parse(toolInput); } catch { return {}; }
-  })() : (toolInput || {});
+  const normalizedTool = normalizeToolDisplayCall(toolName, toolInput);
+  const input = typeof normalizedTool.toolInput === 'string' ? (() => {
+    try { return JSON.parse(normalizedTool.toolInput); } catch { return {}; }
+  })() : (normalizedTool.toolInput || {});
 
-  switch (toolName) {
+  switch (normalizedTool.toolName) {
     case 'Read':
     case 'Write':
     case 'Edit':

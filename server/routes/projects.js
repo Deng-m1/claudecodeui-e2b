@@ -53,9 +53,28 @@ export async function validateWorkspacePath(requestedPath) {
     // Resolve to absolute path
     let absolutePath = path.resolve(requestedPath);
 
+    let resolvedWorkspaceRoot;
+    try {
+      resolvedWorkspaceRoot = await fs.realpath(WORKSPACES_ROOT);
+    } catch (error) {
+      resolvedWorkspaceRoot = path.resolve(WORKSPACES_ROOT);
+    }
+
     // Check if path is a forbidden system directory
     const normalizedPath = path.normalize(absolutePath);
-    if (FORBIDDEN_PATHS.includes(normalizedPath) || normalizedPath === '/') {
+    const isWorkspaceRootInsideForbiddenPath = (forbiddenPath) =>
+      resolvedWorkspaceRoot === forbiddenPath ||
+      resolvedWorkspaceRoot.startsWith(forbiddenPath + path.sep);
+
+    const isExplicitlyForbiddenPath = FORBIDDEN_PATHS.some((forbiddenPath) => {
+      if (isWorkspaceRootInsideForbiddenPath(forbiddenPath)) {
+        return false;
+      }
+
+      return normalizedPath === forbiddenPath;
+    });
+
+    if (isExplicitlyForbiddenPath || normalizedPath === '/') {
       return {
         valid: false,
         error: 'Cannot use system-critical directories as workspace locations'
@@ -64,6 +83,10 @@ export async function validateWorkspacePath(requestedPath) {
 
     // Additional check for paths starting with forbidden directories
     for (const forbidden of FORBIDDEN_PATHS) {
+      if (isWorkspaceRootInsideForbiddenPath(forbidden)) {
+        continue;
+      }
+
       if (normalizedPath === forbidden ||
           normalizedPath.startsWith(forbidden + path.sep)) {
         // Exception: /var/tmp and similar user-accessible paths might be allowed
@@ -109,9 +132,6 @@ export async function validateWorkspacePath(requestedPath) {
         throw error;
       }
     }
-
-    // Resolve the workspace root to its real path
-    const resolvedWorkspaceRoot = await fs.realpath(WORKSPACES_ROOT);
 
     // Ensure the resolved path is contained within the allowed workspace root
     if (!realPath.startsWith(resolvedWorkspaceRoot + path.sep) &&

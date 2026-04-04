@@ -2,7 +2,12 @@ import { useState } from 'react';
 import { AlertTriangle, Plus, Shield, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button, Input } from '../../../../../../../shared/view/ui';
-import type { CodexPermissionMode, GeminiPermissionMode } from '../../../../../types/types';
+import SettingsToggle from '../../../../SettingsToggle';
+import type {
+  CodexFeatureToggles,
+  CodexPermissionMode,
+  GeminiPermissionMode,
+} from '../../../../../types/types';
 
 const COMMON_CLAUDE_TOOLS = [
   'Bash(git log:*)',
@@ -474,10 +479,68 @@ type CodexPermissionsProps = {
   agent: 'codex';
   permissionMode: CodexPermissionMode;
   onPermissionModeChange: (value: CodexPermissionMode) => void;
+  featureToggles: CodexFeatureToggles;
+  onFeatureTogglesChange: (value: CodexFeatureToggles) => void;
 };
 
-function CodexPermissions({ permissionMode, onPermissionModeChange }: Omit<CodexPermissionsProps, 'agent'>) {
+const CODEX_FEATURE_ROWS: Array<{
+  key: keyof CodexFeatureToggles;
+  labelKey: string;
+  descriptionKey: string;
+  appliesTo: string;
+}> = [
+  {
+    key: 'multiAgent',
+    labelKey: 'permissions.codex.features.multiAgent.title',
+    descriptionKey: 'permissions.codex.features.multiAgent.description',
+    appliesTo: 'features.multi_agent',
+  },
+  {
+    key: 'parallelFanOut',
+    labelKey: 'permissions.codex.features.parallelFanOut.title',
+    descriptionKey: 'permissions.codex.features.parallelFanOut.description',
+    appliesTo: 'features.enable_fanout',
+  },
+  {
+    key: 'reasoningSummaries',
+    labelKey: 'permissions.codex.features.reasoningSummaries.title',
+    descriptionKey: 'permissions.codex.features.reasoningSummaries.description',
+    appliesTo: 'modelReasoningEffort',
+  },
+  {
+    key: 'shellTool',
+    labelKey: 'permissions.codex.features.shellTool.title',
+    descriptionKey: 'permissions.codex.features.shellTool.description',
+    appliesTo: 'features.shell_tool',
+  },
+  {
+    key: 'webSearch',
+    labelKey: 'permissions.codex.features.webSearch.title',
+    descriptionKey: 'permissions.codex.features.webSearch.description',
+    appliesTo: 'webSearchEnabled',
+  },
+  {
+    key: 'networkAccess',
+    labelKey: 'permissions.codex.features.networkAccess.title',
+    descriptionKey: 'permissions.codex.features.networkAccess.description',
+    appliesTo: 'networkAccessEnabled',
+  },
+];
+
+function CodexPermissions({
+  permissionMode,
+  onPermissionModeChange,
+  featureToggles,
+  onFeatureTogglesChange,
+}: Omit<CodexPermissionsProps, 'agent'>) {
   const { t } = useTranslation('settings');
+
+  const handleFeatureToggleChange = (key: keyof CodexFeatureToggles, value: boolean) => {
+    onFeatureTogglesChange({
+      ...featureToggles,
+      [key]: value,
+    });
+  };
 
   return (
     <div className="space-y-6">
@@ -487,6 +550,11 @@ function CodexPermissions({ permissionMode, onPermissionModeChange }: Omit<Codex
           <h3 className="text-lg font-medium text-foreground">{t('permissions.codex.permissionMode')}</h3>
         </div>
         <p className="text-sm text-muted-foreground">{t('permissions.codex.description')}</p>
+        <p className="text-xs text-muted-foreground">
+          {t('permissions.codex.defaultBehaviorNote', {
+            defaultValue: 'This selection now sets the default Codex sandbox and approval behavior for new turns. The chat mode button can still override it per session.',
+          })}
+        </p>
 
         <div
           className={`cursor-pointer rounded-lg border p-4 transition-all ${permissionMode === 'default'
@@ -574,6 +642,41 @@ function CodexPermissions({ permissionMode, onPermissionModeChange }: Omit<Codex
             <p className="text-xs opacity-75">{t('permissions.codex.technicalInfo.overrideNote')}</p>
           </div>
         </details>
+      </div>
+
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Shield className="h-5 w-5 text-blue-500" />
+          <h3 className="text-lg font-medium text-foreground">{t('permissions.codex.features.title')}</h3>
+        </div>
+        <p className="text-sm text-muted-foreground">{t('permissions.codex.features.description')}</p>
+
+        <div className="space-y-3">
+          {CODEX_FEATURE_ROWS.map((feature) => (
+            <div
+              key={feature.key}
+              className="flex items-start justify-between gap-4 rounded-lg border border-border bg-card/60 p-4"
+            >
+              <div className="min-w-0 flex-1 space-y-1">
+                <div className="font-medium text-foreground">{t(feature.labelKey)}</div>
+                <div className="text-sm text-muted-foreground">{t(feature.descriptionKey)}</div>
+                <div className="text-xs text-muted-foreground">
+                  <code className="rounded bg-muted px-1 py-0.5">{feature.appliesTo}</code>
+                </div>
+              </div>
+
+              <SettingsToggle
+                checked={featureToggles[feature.key]}
+                onChange={(value) => handleFeatureToggleChange(feature.key, value)}
+                ariaLabel={t(feature.labelKey)}
+              />
+            </div>
+          ))}
+        </div>
+
+        <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-100">
+          <p>{t('permissions.codex.features.note')}</p>
+        </div>
       </div>
     </div>
   );

@@ -3,7 +3,9 @@ import type { TFunction } from 'i18next';
 import { Badge, Button } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
 import { formatTimeAgo } from '../../../../utils/dateUtils';
-import type { Project, ProjectSession, SessionProvider } from '../../../../types/app';
+import type { Project, ProjectSession, RuntimeMode, SessionProvider } from '../../../../types/app';
+import { getSessionForkChildCount, getSessionForkedFromId } from '../../../../utils/sessionForks';
+import { isSameSelectedSession } from '../../../../utils/sessionSelection';
 import type { SessionWithProvider } from '../../types/types';
 import { createSessionViewModel } from '../../utils/utils';
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
@@ -18,7 +20,13 @@ type SidebarSessionItemProps = {
   onEditingSessionNameChange: (value: string) => void;
   onStartEditingSession: (sessionId: string, initialName: string) => void;
   onCancelEditingSession: () => void;
-  onSaveEditingSession: (projectName: string, sessionId: string, summary: string, provider: SessionProvider) => void;
+  onSaveEditingSession: (
+    projectName: string,
+    sessionId: string,
+    summary: string,
+    provider: SessionProvider,
+    runtime: RuntimeMode,
+  ) => void;
   onProjectSelect: (project: Project) => void;
   onSessionSelect: (session: SessionWithProvider, projectName: string) => void;
   onDeleteSession: (
@@ -26,6 +34,7 @@ type SidebarSessionItemProps = {
     sessionId: string,
     sessionTitle: string,
     provider: SessionProvider,
+    runtime?: RuntimeMode,
   ) => void;
   t: TFunction;
 };
@@ -47,7 +56,11 @@ export default function SidebarSessionItem({
   t,
 }: SidebarSessionItemProps) {
   const sessionView = createSessionViewModel(session, currentTime, t);
-  const isSelected = selectedSession?.id === session.id;
+  const normalizedRuntime = session.__runtime || 'local';
+  const isSelected = isSameSelectedSession(selectedSession, session, project.name);
+  const canDeleteSession = session.__runtime === 'e2b' || !sessionView.isCursorSession;
+  const forkedFromId = getSessionForkedFromId(session);
+  const forkChildCount = getSessionForkChildCount(session);
 
   const selectMobileSession = () => {
     onProjectSelect(project);
@@ -55,11 +68,17 @@ export default function SidebarSessionItem({
   };
 
   const saveEditedSession = () => {
-    onSaveEditingSession(project.name, session.id, editingSessionName, session.__provider);
+    onSaveEditingSession(project.name, session.id, editingSessionName, session.__provider, normalizedRuntime);
   };
 
   const requestDeleteSession = () => {
-    onDeleteSession(project.name, session.id, sessionView.sessionName, session.__provider);
+    onDeleteSession(
+      project.name,
+      session.id,
+      sessionView.sessionName,
+      session.__provider,
+      normalizedRuntime,
+    );
   };
 
   return (
@@ -72,6 +91,8 @@ export default function SidebarSessionItem({
 
       <div className="md:hidden">
         <div
+          data-testid="sidebar-session-item"
+          data-session-id={session.id}
           className={cn(
             'p-2 mx-3 my-0.5 rounded-md bg-card border active:scale-[0.98] transition-all duration-150 relative',
             isSelected ? 'bg-primary/5 border-primary/20' : '',
@@ -93,11 +114,38 @@ export default function SidebarSessionItem({
 
             <div className="min-w-0 flex-1">
               <div className="truncate text-xs font-medium text-foreground">{sessionView.sessionName}</div>
-              <div className="mt-0.5 flex items-center gap-1">
+              <div className="mt-0.5 flex flex-wrap items-center gap-1">
                 <Clock className="h-2.5 w-2.5 text-muted-foreground" />
                 <span className="text-xs text-muted-foreground">
                   {formatTimeAgo(sessionView.sessionTime, currentTime, t)}
                 </span>
+                {forkedFromId && (
+                  <Badge
+                    variant="outline"
+                    className="px-1 py-0 text-[10px]"
+                    title={t('sessions.forkedFromTooltip', {
+                      id: forkedFromId,
+                      defaultValue: `Forked from ${forkedFromId}`,
+                    })}
+                  >
+                    {t('sessions.forkBadge', { defaultValue: 'Fork' })}
+                  </Badge>
+                )}
+                {forkChildCount > 0 && (
+                  <Badge
+                    variant="outline"
+                    className="px-1 py-0 text-[10px]"
+                    title={t('sessions.forksTooltip', {
+                      count: forkChildCount,
+                      defaultValue: forkChildCount === 1 ? 'Has 1 fork' : `Has ${forkChildCount} forks`,
+                    })}
+                  >
+                    {t('sessions.forksBadge', {
+                      count: forkChildCount,
+                      defaultValue: forkChildCount === 1 ? '1 fork' : `${forkChildCount} forks`,
+                    })}
+                  </Badge>
+                )}
                 {sessionView.messageCount > 0 && (
                   <Badge variant="secondary" className="ml-auto px-1 py-0 text-xs">
                     {sessionView.messageCount}
@@ -109,7 +157,7 @@ export default function SidebarSessionItem({
               </div>
             </div>
 
-            {!sessionView.isCursorSession && (
+            {canDeleteSession && (
               <button
                 className="ml-1 flex h-5 w-5 items-center justify-center rounded-md bg-red-50 opacity-70 transition-transform active:scale-95 dark:bg-red-900/20"
                 onClick={(event) => {
@@ -127,6 +175,8 @@ export default function SidebarSessionItem({
       <div className="hidden md:block">
         <Button
           variant="ghost"
+          data-testid="sidebar-session-item"
+          data-session-id={session.id}
           className={cn(
             'w-full justify-start p-2 h-auto font-normal text-left hover:bg-accent/50 transition-colors duration-200',
             isSelected && 'bg-accent text-accent-foreground',
@@ -137,11 +187,38 @@ export default function SidebarSessionItem({
             <SessionProviderLogo provider={session.__provider} className="mt-0.5 h-3 w-3 flex-shrink-0" />
             <div className="min-w-0 flex-1">
               <div className="truncate text-xs font-medium text-foreground">{sessionView.sessionName}</div>
-              <div className="mt-0.5 flex items-center gap-1">
+              <div className="mt-0.5 flex flex-wrap items-center gap-1">
                 <Clock className="h-2.5 w-2.5 text-muted-foreground" />
                 <span className="text-xs text-muted-foreground">
                   {formatTimeAgo(sessionView.sessionTime, currentTime, t)}
                 </span>
+                {forkedFromId && (
+                  <Badge
+                    variant="outline"
+                    className="px-1 py-0 text-[10px]"
+                    title={t('sessions.forkedFromTooltip', {
+                      id: forkedFromId,
+                      defaultValue: `Forked from ${forkedFromId}`,
+                    })}
+                  >
+                    {t('sessions.forkBadge', { defaultValue: 'Fork' })}
+                  </Badge>
+                )}
+                {forkChildCount > 0 && (
+                  <Badge
+                    variant="outline"
+                    className="px-1 py-0 text-[10px]"
+                    title={t('sessions.forksTooltip', {
+                      count: forkChildCount,
+                      defaultValue: forkChildCount === 1 ? 'Has 1 fork' : `Has ${forkChildCount} forks`,
+                    })}
+                  >
+                    {t('sessions.forksBadge', {
+                      count: forkChildCount,
+                      defaultValue: forkChildCount === 1 ? '1 fork' : `${forkChildCount} forks`,
+                    })}
+                  </Badge>
+                )}
                 {sessionView.messageCount > 0 && (
                   <Badge
                     variant="secondary"
@@ -210,7 +287,7 @@ export default function SidebarSessionItem({
                 >
                   <Edit2 className="h-3 w-3 text-gray-600 dark:text-gray-400" />
                 </button>
-                {!sessionView.isCursorSession && (
+                {canDeleteSession && (
                   <button
                     className="flex h-6 w-6 items-center justify-center rounded bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40"
                     onClick={(event) => {

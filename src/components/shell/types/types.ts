@@ -7,10 +7,13 @@ export type AuthCopyStatus = 'idle' | 'copied' | 'failed';
 
 export type ShellInitMessage = {
   type: 'init';
+  projectName?: string | null;
   projectPath: string;
+  projectRuntime?: string | null;
   sessionId: string | null;
   hasSession: boolean;
   provider: string;
+  terminalKey?: string | null;
   cols: number;
   rows: number;
   initialCommand: string | null | undefined;
@@ -43,6 +46,7 @@ export type UseShellRuntimeOptions = {
   isPlainShell: boolean;
   minimal: boolean;
   autoConnect: boolean;
+  isActive: boolean;
   isRestarting: boolean;
   onProcessComplete?: ((exitCode: number) => void) | null;
   onOutputRef?: MutableRefObject<(() => void) | null>;

@@ -2,6 +2,7 @@ import express from 'express';
 import bcrypt from 'bcrypt';
 import { userDb, db } from '../database/db.js';
 import { generateToken, authenticateToken } from '../middleware/auth.js';
+import { AUTH_DISABLE_REGISTRATION } from '../constants/config.js';
 
 const router = express.Router();
 
@@ -9,8 +10,11 @@ const router = express.Router();
 router.get('/status', async (req, res) => {
   try {
     const hasUsers = await userDb.hasUsers();
+    const setupLocked = !hasUsers && AUTH_DISABLE_REGISTRATION;
     res.json({ 
-      needsSetup: !hasUsers,
+      needsSetup: !hasUsers && !AUTH_DISABLE_REGISTRATION,
+      registrationDisabled: AUTH_DISABLE_REGISTRATION,
+      setupLocked,
       isAuthenticated: false // Will be overridden by frontend if token exists
     });
   } catch (error) {
@@ -22,6 +26,10 @@ router.get('/status', async (req, res) => {
 // User registration (setup) - only allowed if no users exist
 router.post('/register', async (req, res) => {
   try {
+    if (AUTH_DISABLE_REGISTRATION) {
+      return res.status(403).json({ error: 'Self-registration is disabled on this server.' });
+    }
+
     const { username, password } = req.body;
     
     // Validate input
@@ -81,6 +89,10 @@ router.post('/register', async (req, res) => {
 // User login
 router.post('/login', async (req, res) => {
   try {
+    if (AUTH_DISABLE_REGISTRATION && !userDb.hasUsers()) {
+      return res.status(403).json({ error: 'Registration is disabled. No owner account is configured.' });
+    }
+
     const { username, password } = req.body;
     
     // Validate input

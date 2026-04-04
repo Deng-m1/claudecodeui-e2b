@@ -36,7 +36,7 @@ router.get('/config', async (req, res) => {
           version: 1,
           model: {
             modelId: CURSOR_MODELS.DEFAULT,
-            displayName: "GPT-5"
+            displayName: "Auto"
           },
           permissions: {
             allow: [],

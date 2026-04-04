@@ -1,62 +1,23 @@
 import express from 'express';
-import { spawn } from 'child_process';
 import path from 'path';
-import { promises as fs } from 'fs';
-import { extractProjectDirectory } from '../projects.js';
 import { queryClaudeSDK } from '../claude-sdk.js';
 import { spawnCursor } from '../cursor-cli.js';
+import { getProjectRuntimeAdapter } from '../services/project-runtime/index.js';
 
 const router = express.Router();
 const COMMIT_DIFF_CHARACTER_LIMIT = 500_000;
 
-function spawnAsync(command, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      ...options,
-      shell: false,
-    });
-
-    let stdout = '';
-    let stderr = '';
-
-    child.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
-
-    child.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
-
-    child.on('error', (error) => {
-      reject(error);
-    });
-
-    child.on('close', (code) => {
-      if (code === 0) {
-        resolve({ stdout, stderr });
-        return;
-      }
-
-      const error = new Error(`Command failed: ${command} ${args.join(' ')}`);
-      error.code = code;
-      error.stdout = stdout;
-      error.stderr = stderr;
-      reject(error);
-    });
-  });
-}
-
 // Input validation helpers (defense-in-depth)
 function validateCommitRef(commit) {
   // Allow hex hashes, HEAD, HEAD~N, HEAD^N, tag names, branch names
-  if (!/^[a-zA-Z0-9._~^{}@\/-]+$/.test(commit)) {
+  if (!/^[a-zA-Z0-9._~^{}@\/\-]+$/.test(commit)) {
     throw new Error('Invalid commit reference');
   }
   return commit;
 }
 
 function validateBranchName(branch) {
-  if (!/^[a-zA-Z0-9._\/-]+$/.test(branch)) {
+  if (!/^[a-zA-Z0-9._\/\-]+$/.test(branch)) {
     throw new Error('Invalid branch name');
   }
   return branch;
@@ -66,8 +27,7 @@ function validateFilePath(file, projectPath) {
   if (!file || file.includes('\0')) {
     throw new Error('Invalid file path');
   }
-  // Prevent path traversal: resolve the file relative to the project root
-  // and ensure the result stays within the project directory
+
   if (projectPath) {
     const resolved = path.resolve(projectPath, file);
     const normalizedRoot = path.resolve(projectPath) + path.sep;
@@ -75,6 +35,7 @@ function validateFilePath(file, projectPath) {
       throw new Error('Invalid file path: path traversal detected');
     }
   }
+
   return file;
 }
 
@@ -90,27 +51,28 @@ function validateProjectPath(projectPath) {
     throw new Error('Invalid project path');
   }
   const resolved = path.resolve(projectPath);
-  // Must be an absolute path after resolution
   if (!path.isAbsolute(resolved)) {
     throw new Error('Invalid project path: must be absolute');
   }
-  // Block obviously dangerous paths
   if (resolved === '/' || resolved === path.sep) {
     throw new Error('Invalid project path: root directory not allowed');
   }
   return resolved;
 }
 
-// Helper function to get the actual project path from the encoded project name
-async function getActualProjectPath(projectName) {
-  let projectPath;
-  try {
-    projectPath = await extractProjectDirectory(projectName);
-  } catch (error) {
-    console.error(`Error extracting project directory for ${projectName}:`, error);
-    throw new Error(`Unable to resolve project path for "${projectName}"`);
-  }
-  return validateProjectPath(projectPath);
+async function resolveGitProjectRuntime(projectName, userId) {
+  const adapter = await getProjectRuntimeAdapter(String(projectName), { userId });
+  return {
+    adapter,
+    projectPath: validateProjectPath(adapter.context.projectRoot),
+  };
+}
+
+async function runGit(projectRuntime, args, options = {}) {
+  return projectRuntime.adapter.git.run(args, {
+    ...options,
+    cwd: options.cwd || projectRuntime.projectPath,
+  });
 }
 
 // Helper function to strip git diff headers
@@ -143,31 +105,28 @@ function stripDiffHeaders(diff) {
 }
 
 // Helper function to validate git repository
-async function validateGitRepository(projectPath) {
+async function validateGitRepository(projectRuntime) {
   try {
-    // Check if directory exists
-    await fs.access(projectPath);
+    await projectRuntime.adapter.files.stat(projectRuntime.projectPath);
   } catch {
-    throw new Error(`Project path not found: ${projectPath}`);
+    throw new Error('Project path not found: ' + projectRuntime.projectPath);
   }
 
   try {
-    // Allow any directory that is inside a work tree (repo root or nested folder).
-    const { stdout: insideWorkTreeOutput } = await spawnAsync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: projectPath });
+    const { stdout: insideWorkTreeOutput } = await runGit(projectRuntime, ['rev-parse', '--is-inside-work-tree']);
     const isInsideWorkTree = insideWorkTreeOutput.trim() === 'true';
     if (!isInsideWorkTree) {
       throw new Error('Not inside a git work tree');
     }
 
-    // Ensure git can resolve the repository root for this directory.
-    await spawnAsync('git', ['rev-parse', '--show-toplevel'], { cwd: projectPath });
+    await runGit(projectRuntime, ['rev-parse', '--show-toplevel']);
   } catch {
     throw new Error('Not a git repository. This directory does not contain a .git folder. Initialize a git repository with "git init" to use source control features.');
   }
 }
 
 function getGitErrorDetails(error) {
-  return `${error?.message || ''} ${error?.stderr || ''} ${error?.stdout || ''}`;
+  return (error?.message || '') + ' ' + (error?.stderr || '') + ' ' + (error?.stdout || '');
 }
 
 function isMissingHeadRevisionError(error) {
@@ -178,25 +137,24 @@ function isMissingHeadRevisionError(error) {
     || errorDetails.includes('bad revision');
 }
 
-async function getCurrentBranchName(projectPath) {
+async function getCurrentBranchName(projectRuntime) {
   try {
-    // symbolic-ref works even when the repository has no commits.
-    const { stdout } = await spawnAsync('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: projectPath });
+    const { stdout } = await runGit(projectRuntime, ['symbolic-ref', '--short', 'HEAD']);
     const branchName = stdout.trim();
     if (branchName) {
       return branchName;
     }
-  } catch (error) {
+  } catch {
     // Fall back to rev-parse for detached HEAD and older git edge cases.
   }
 
-  const { stdout } = await spawnAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: projectPath });
+  const { stdout } = await runGit(projectRuntime, ['rev-parse', '--abbrev-ref', 'HEAD']);
   return stdout.trim();
 }
 
-async function repositoryHasCommits(projectPath) {
+async function repositoryHasCommits(projectRuntime) {
   try {
-    await spawnAsync('git', ['rev-parse', '--verify', 'HEAD'], { cwd: projectPath });
+    await runGit(projectRuntime, ['rev-parse', '--verify', 'HEAD']);
     return true;
   } catch (error) {
     if (isMissingHeadRevisionError(error)) {
@@ -206,8 +164,8 @@ async function repositoryHasCommits(projectPath) {
   }
 }
 
-async function getRepositoryRootPath(projectPath) {
-  const { stdout } = await spawnAsync('git', ['rev-parse', '--show-toplevel'], { cwd: projectPath });
+async function getRepositoryRootPath(projectRuntime) {
+  const { stdout } = await runGit(projectRuntime, ['rev-parse', '--show-toplevel']);
   return stdout.trim();
 }
 
@@ -240,22 +198,22 @@ function buildFilePathCandidates(projectPath, repositoryRootPath, filePath) {
   if (
     projectRelativePath
     && projectRelativePath !== '.'
-    && !normalizedFilePath.startsWith(`${projectRelativePath}/`)
+    && !normalizedFilePath.startsWith(projectRelativePath + '/')
   ) {
-    candidates.push(`${projectRelativePath}/${normalizedFilePath}`);
+    candidates.push(projectRelativePath + '/' + normalizedFilePath);
   }
 
   return Array.from(new Set(candidates.filter(Boolean)));
 }
 
-async function resolveRepositoryFilePath(projectPath, filePath) {
+async function resolveRepositoryFilePath(projectRuntime, filePath) {
   validateFilePath(filePath);
 
-  const repositoryRootPath = await getRepositoryRootPath(projectPath);
-  const candidateFilePaths = buildFilePathCandidates(projectPath, repositoryRootPath, filePath);
+  const repositoryRootPath = await getRepositoryRootPath(projectRuntime);
+  const candidateFilePaths = buildFilePathCandidates(projectRuntime.projectPath, repositoryRootPath, filePath);
 
   for (const candidateFilePath of candidateFilePaths) {
-    const { stdout } = await spawnAsync('git', ['status', '--porcelain', '--', candidateFilePath], { cwd: repositoryRootPath });
+    const { stdout } = await runGit(projectRuntime, ['status', '--porcelain', '--', candidateFilePath], { cwd: repositoryRootPath });
     if (stdout.trim()) {
       return {
         repositoryRootPath,
@@ -264,13 +222,12 @@ async function resolveRepositoryFilePath(projectPath, filePath) {
     }
   }
 
-  // If the caller sent a bare filename (e.g. "hello.ts"), recover it from changed files.
   const normalizedFilePath = normalizeRepositoryRelativeFilePath(filePath);
   if (!normalizedFilePath.includes('/')) {
-    const { stdout: repositoryStatusOutput } = await spawnAsync('git', ['status', '--porcelain'], { cwd: repositoryRootPath });
+    const { stdout: repositoryStatusOutput } = await runGit(projectRuntime, ['status', '--porcelain'], { cwd: repositoryRootPath });
     const changedFilePaths = parseStatusFilePaths(repositoryStatusOutput);
     const suffixMatches = changedFilePaths.filter(
-      (changedFilePath) => changedFilePath === normalizedFilePath || changedFilePath.endsWith(`/${normalizedFilePath}`),
+      (changedFilePath) => changedFilePath === normalizedFilePath || changedFilePath.endsWith('/' + normalizedFilePath),
     );
 
     if (suffixMatches.length === 1) {
@@ -287,6 +244,12 @@ async function resolveRepositoryFilePath(projectPath, filePath) {
   };
 }
 
+function getCommitMessageProjectCwd(projectRuntime) {
+  return projectRuntime.adapter.context.runtime === 'local'
+    ? projectRuntime.projectPath
+    : process.cwd();
+}
+
 // Get git status for a project
 router.get('/status', async (req, res) => {
   const { project } = req.query;
@@ -296,16 +259,17 @@ router.get('/status', async (req, res) => {
   }
 
   try {
-    const projectPath = await getActualProjectPath(project);
+    const projectRuntime = await resolveGitProjectRuntime(project, req.user?.id || null);
+    const projectPath = projectRuntime.projectPath;
 
     // Validate git repository
-    await validateGitRepository(projectPath);
+    await validateGitRepository(projectRuntime);
 
-    const branch = await getCurrentBranchName(projectPath);
-    const hasCommits = await repositoryHasCommits(projectPath);
+    const branch = await getCurrentBranchName(projectRuntime);
+    const hasCommits = await repositoryHasCommits(projectRuntime);
 
     // Get git status
-    const { stdout: statusOutput } = await spawnAsync('git', ['status', '--porcelain'], { cwd: projectPath });
+    const { stdout: statusOutput } = await runGit(projectRuntime, ['status', '--porcelain'], { cwd: projectPath });
 
     const modified = [];
     const added = [];
@@ -359,20 +323,19 @@ router.get('/diff', async (req, res) => {
   }
 
   try {
-    const projectPath = await getActualProjectPath(project);
+    const projectRuntime = await resolveGitProjectRuntime(project, req.user?.id || null);
+    const projectPath = projectRuntime.projectPath;
     
     // Validate git repository
-    await validateGitRepository(projectPath);
+    await validateGitRepository(projectRuntime);
 
     const {
       repositoryRootPath,
       repositoryRelativeFilePath,
-    } = await resolveRepositoryFilePath(projectPath, file);
+    } = await resolveRepositoryFilePath(projectRuntime, file);
 
     // Check if file is untracked or deleted
-    const { stdout: statusOutput } = await spawnAsync(
-      'git',
-      ['status', '--porcelain', '--', repositoryRelativeFilePath],
+    const { stdout: statusOutput } = await runGit(projectRuntime, ['status', '--porcelain', '--', repositoryRelativeFilePath],
       { cwd: repositoryRootPath },
     );
     const isUntracked = statusOutput.startsWith('??');
@@ -380,46 +343,33 @@ router.get('/diff', async (req, res) => {
 
     let diff;
     if (isUntracked) {
-      // For untracked files, show the entire file content as additions
       const filePath = path.join(repositoryRootPath, repositoryRelativeFilePath);
-      const stats = await fs.stat(filePath);
+      const fileStat = await projectRuntime.adapter.files.stat(filePath, { scopeRoot: repositoryRootPath });
 
-      if (stats.isDirectory()) {
-        // For directories, show a simple message
+      if (fileStat.entryType === 'directory') {
         diff = `Directory: ${repositoryRelativeFilePath}\n(Cannot show diff for directories)`;
       } else {
-        const fileContent = await fs.readFile(filePath, 'utf-8');
+        const { content: fileContent } = await projectRuntime.adapter.files.readText(filePath, { scopeRoot: repositoryRootPath });
         const lines = fileContent.split('\n');
         diff = `--- /dev/null\n+++ b/${repositoryRelativeFilePath}\n@@ -0,0 +1,${lines.length} @@\n` +
-               lines.map(line => `+${line}`).join('\n');
+               lines.map((line) => `+${line}`).join('\n');
       }
     } else if (isDeleted) {
-      // For deleted files, show the entire file content from HEAD as deletions
-      const { stdout: fileContent } = await spawnAsync(
-        'git',
-        ['show', `HEAD:${repositoryRelativeFilePath}`],
+      const { stdout: fileContent } = await runGit(projectRuntime, ['show', `HEAD:${repositoryRelativeFilePath}`],
         { cwd: repositoryRootPath },
       );
       const lines = fileContent.split('\n');
       diff = `--- a/${repositoryRelativeFilePath}\n+++ /dev/null\n@@ -1,${lines.length} +0,0 @@\n` +
-             lines.map(line => `-${line}`).join('\n');
+             lines.map((line) => `-${line}`).join('\n');
     } else {
-      // Get diff for tracked files
-      // First check for unstaged changes (working tree vs index)
-      const { stdout: unstagedDiff } = await spawnAsync(
-        'git',
-        ['diff', '--', repositoryRelativeFilePath],
+      const { stdout: unstagedDiff } = await runGit(projectRuntime, ['diff', '--', repositoryRelativeFilePath],
         { cwd: repositoryRootPath },
       );
 
       if (unstagedDiff) {
-        // Show unstaged changes if they exist
         diff = stripDiffHeaders(unstagedDiff);
       } else {
-        // If no unstaged changes, check for staged changes (index vs HEAD)
-        const { stdout: stagedDiff } = await spawnAsync(
-          'git',
-          ['diff', '--cached', '--', repositoryRelativeFilePath],
+        const { stdout: stagedDiff } = await runGit(projectRuntime, ['diff', '--cached', '--', repositoryRelativeFilePath],
           { cwd: repositoryRootPath },
         );
         diff = stripDiffHeaders(stagedDiff) || '';
@@ -442,20 +392,19 @@ router.get('/file-with-diff', async (req, res) => {
   }
 
   try {
-    const projectPath = await getActualProjectPath(project);
+    const projectRuntime = await resolveGitProjectRuntime(project, req.user?.id || null);
+    const projectPath = projectRuntime.projectPath;
 
     // Validate git repository
-    await validateGitRepository(projectPath);
+    await validateGitRepository(projectRuntime);
 
     const {
       repositoryRootPath,
       repositoryRelativeFilePath,
-    } = await resolveRepositoryFilePath(projectPath, file);
+    } = await resolveRepositoryFilePath(projectRuntime, file);
 
     // Check file status
-    const { stdout: statusOutput } = await spawnAsync(
-      'git',
-      ['status', '--porcelain', '--', repositoryRelativeFilePath],
+    const { stdout: statusOutput } = await runGit(projectRuntime, ['status', '--porcelain', '--', repositoryRelativeFilePath],
       { cwd: repositoryRootPath },
     );
     const isUntracked = statusOutput.startsWith('??');
@@ -465,37 +414,28 @@ router.get('/file-with-diff', async (req, res) => {
     let oldContent = '';
 
     if (isDeleted) {
-      // For deleted files, get content from HEAD
-      const { stdout: headContent } = await spawnAsync(
-        'git',
-        ['show', `HEAD:${repositoryRelativeFilePath}`],
+      const { stdout: headContent } = await runGit(projectRuntime, ['show', `HEAD:${repositoryRelativeFilePath}`],
         { cwd: repositoryRootPath },
       );
       oldContent = headContent;
-      currentContent = headContent; // Show the deleted content in editor
+      currentContent = headContent;
     } else {
-      // Get current file content
       const filePath = path.join(repositoryRootPath, repositoryRelativeFilePath);
-      const stats = await fs.stat(filePath);
+      const fileStat = await projectRuntime.adapter.files.stat(filePath, { scopeRoot: repositoryRootPath });
 
-      if (stats.isDirectory()) {
-        // Cannot show content for directories
+      if (fileStat.entryType === 'directory') {
         return res.status(400).json({ error: 'Cannot show diff for directories' });
       }
 
-      currentContent = await fs.readFile(filePath, 'utf-8');
+      currentContent = (await projectRuntime.adapter.files.readText(filePath, { scopeRoot: repositoryRootPath })).content;
 
       if (!isUntracked) {
-        // Get the old content from HEAD for tracked files
         try {
-          const { stdout: headContent } = await spawnAsync(
-            'git',
-            ['show', `HEAD:${repositoryRelativeFilePath}`],
+          const { stdout: headContent } = await runGit(projectRuntime, ['show', `HEAD:${repositoryRelativeFilePath}`],
             { cwd: repositoryRootPath },
           );
           oldContent = headContent;
-        } catch (error) {
-          // File might be newly added to git (staged but not committed)
+        } catch {
           oldContent = '';
         }
       }
@@ -522,24 +462,25 @@ router.post('/initial-commit', async (req, res) => {
   }
 
   try {
-    const projectPath = await getActualProjectPath(project);
+    const projectRuntime = await resolveGitProjectRuntime(project, req.user?.id || null);
+    const projectPath = projectRuntime.projectPath;
 
     // Validate git repository
-    await validateGitRepository(projectPath);
+    await validateGitRepository(projectRuntime);
 
     // Check if there are already commits
     try {
-      await spawnAsync('git', ['rev-parse', 'HEAD'], { cwd: projectPath });
+      await runGit(projectRuntime, ['rev-parse', 'HEAD'], { cwd: projectPath });
       return res.status(400).json({ error: 'Repository already has commits. Use regular commit instead.' });
     } catch (error) {
       // No HEAD - this is good, we can create initial commit
     }
 
     // Add all files
-    await spawnAsync('git', ['add', '.'], { cwd: projectPath });
+    await runGit(projectRuntime, ['add', '.'], { cwd: projectPath });
 
     // Create initial commit
-    const { stdout } = await spawnAsync('git', ['commit', '-m', 'Initial commit'], { cwd: projectPath });
+    const { stdout } = await runGit(projectRuntime, ['commit', '-m', 'Initial commit'], { cwd: projectPath });
 
     res.json({ success: true, output: stdout, message: 'Initial commit created successfully' });
   } catch (error) {
@@ -566,20 +507,21 @@ router.post('/commit', async (req, res) => {
   }
 
   try {
-    const projectPath = await getActualProjectPath(project);
+    const projectRuntime = await resolveGitProjectRuntime(project, req.user?.id || null);
+    const projectPath = projectRuntime.projectPath;
     
     // Validate git repository
-    await validateGitRepository(projectPath);
-    const repositoryRootPath = await getRepositoryRootPath(projectPath);
+    await validateGitRepository(projectRuntime);
+    const repositoryRootPath = await getRepositoryRootPath(projectRuntime);
     
     // Stage selected files
     for (const file of files) {
-      const { repositoryRelativeFilePath } = await resolveRepositoryFilePath(projectPath, file);
-      await spawnAsync('git', ['add', '--', repositoryRelativeFilePath], { cwd: repositoryRootPath });
+      const { repositoryRelativeFilePath } = await resolveRepositoryFilePath(projectRuntime, file);
+      await runGit(projectRuntime, ['add', '--', repositoryRelativeFilePath], { cwd: repositoryRootPath });
     }
 
     // Commit with message
-    const { stdout } = await spawnAsync('git', ['commit', '-m', message], { cwd: repositoryRootPath });
+    const { stdout } = await runGit(projectRuntime, ['commit', '-m', message], { cwd: repositoryRootPath });
     
     res.json({ success: true, output: stdout });
   } catch (error) {
@@ -597,11 +539,12 @@ router.post('/revert-local-commit', async (req, res) => {
   }
 
   try {
-    const projectPath = await getActualProjectPath(project);
-    await validateGitRepository(projectPath);
+    const projectRuntime = await resolveGitProjectRuntime(project, req.user?.id || null);
+    const projectPath = projectRuntime.projectPath;
+    await validateGitRepository(projectRuntime);
 
     try {
-      await spawnAsync('git', ['rev-parse', '--verify', 'HEAD'], { cwd: projectPath });
+      await runGit(projectRuntime, ['rev-parse', '--verify', 'HEAD'], { cwd: projectPath });
     } catch (error) {
       return res.status(400).json({
         error: 'No local commit to revert',
@@ -611,7 +554,7 @@ router.post('/revert-local-commit', async (req, res) => {
 
     try {
       // Soft reset rewinds one commit while preserving all file changes in the index.
-      await spawnAsync('git', ['reset', '--soft', 'HEAD~1'], { cwd: projectPath });
+      await runGit(projectRuntime, ['reset', '--soft', 'HEAD~1'], { cwd: projectPath });
     } catch (error) {
       const errorDetails = `${error.stderr || ''} ${error.message || ''}`;
       const isInitialCommit = errorDetails.includes('HEAD~1') &&
@@ -622,7 +565,7 @@ router.post('/revert-local-commit', async (req, res) => {
       }
 
       // Initial commit has no parent; deleting HEAD uncommits it and keeps files staged.
-      await spawnAsync('git', ['update-ref', '-d', 'HEAD'], { cwd: projectPath });
+      await runGit(projectRuntime, ['update-ref', '-d', 'HEAD'], { cwd: projectPath });
     }
 
     res.json({
@@ -644,13 +587,14 @@ router.get('/branches', async (req, res) => {
   }
 
   try {
-    const projectPath = await getActualProjectPath(project);
+    const projectRuntime = await resolveGitProjectRuntime(project, req.user?.id || null);
+    const projectPath = projectRuntime.projectPath;
     
     // Validate git repository
-    await validateGitRepository(projectPath);
+    await validateGitRepository(projectRuntime);
     
     // Get all branches
-    const { stdout } = await spawnAsync('git', ['branch', '-a'], { cwd: projectPath });
+    const { stdout } = await runGit(projectRuntime, ['branch', '-a'], { cwd: projectPath });
 
     const rawLines = stdout
       .split('\n')
@@ -688,11 +632,12 @@ router.post('/checkout', async (req, res) => {
   }
 
   try {
-    const projectPath = await getActualProjectPath(project);
+    const projectRuntime = await resolveGitProjectRuntime(project, req.user?.id || null);
+    const projectPath = projectRuntime.projectPath;
     
     // Checkout the branch
     validateBranchName(branch);
-    const { stdout } = await spawnAsync('git', ['checkout', branch], { cwd: projectPath });
+    const { stdout } = await runGit(projectRuntime, ['checkout', branch], { cwd: projectPath });
     
     res.json({ success: true, output: stdout });
   } catch (error) {
@@ -710,11 +655,12 @@ router.post('/create-branch', async (req, res) => {
   }
 
   try {
-    const projectPath = await getActualProjectPath(project);
+    const projectRuntime = await resolveGitProjectRuntime(project, req.user?.id || null);
+    const projectPath = projectRuntime.projectPath;
     
     // Create and checkout new branch
     validateBranchName(branch);
-    const { stdout } = await spawnAsync('git', ['checkout', '-b', branch], { cwd: projectPath });
+    const { stdout } = await runGit(projectRuntime, ['checkout', '-b', branch], { cwd: projectPath });
     
     res.json({ success: true, output: stdout });
   } catch (error) {
@@ -732,16 +678,17 @@ router.post('/delete-branch', async (req, res) => {
   }
 
   try {
-    const projectPath = await getActualProjectPath(project);
-    await validateGitRepository(projectPath);
+    const projectRuntime = await resolveGitProjectRuntime(project, req.user?.id || null);
+    const projectPath = projectRuntime.projectPath;
+    await validateGitRepository(projectRuntime);
 
     // Safety: cannot delete the currently checked-out branch
-    const { stdout: currentBranch } = await spawnAsync('git', ['branch', '--show-current'], { cwd: projectPath });
+    const { stdout: currentBranch } = await runGit(projectRuntime, ['branch', '--show-current'], { cwd: projectPath });
     if (currentBranch.trim() === branch) {
       return res.status(400).json({ error: 'Cannot delete the currently checked-out branch' });
     }
 
-    const { stdout } = await spawnAsync('git', ['branch', '-d', branch], { cwd: projectPath });
+    const { stdout } = await runGit(projectRuntime, ['branch', '-d', branch], { cwd: projectPath });
     res.json({ success: true, output: stdout });
   } catch (error) {
     console.error('Git delete branch error:', error);
@@ -758,17 +705,16 @@ router.get('/commits', async (req, res) => {
   }
 
   try {
-    const projectPath = await getActualProjectPath(project);
-    await validateGitRepository(projectPath);
+    const projectRuntime = await resolveGitProjectRuntime(project, req.user?.id || null);
+    const projectPath = projectRuntime.projectPath;
+    await validateGitRepository(projectRuntime);
     const parsedLimit = Number.parseInt(String(limit), 10);
     const safeLimit = Number.isFinite(parsedLimit) && parsedLimit > 0
       ? Math.min(parsedLimit, 100)
       : 10;
     
     // Get commit log with stats
-    const { stdout } = await spawnAsync(
-      'git',
-      ['log', '--pretty=format:%H|%an|%ae|%ad|%s', '--date=iso-strict', '-n', String(safeLimit)],
+    const { stdout } = await runGit(projectRuntime, ['log', '--pretty=format:%H|%an|%ae|%ad|%s', '--date=iso-strict', '-n', String(safeLimit)],
       { cwd: projectPath },
     );
     
@@ -789,8 +735,7 @@ router.get('/commits', async (req, res) => {
     // Get stats for each commit
     for (const commit of commits) {
       try {
-        const { stdout: stats } = await spawnAsync(
-          'git', ['show', '--stat', '--format=', commit.hash],
+        const { stdout: stats } = await runGit(projectRuntime, ['show', '--stat', '--format=', commit.hash],
           { cwd: projectPath }
         );
         commit.stats = stats.trim().split('\n').pop(); // Get the summary line
@@ -815,14 +760,14 @@ router.get('/commit-diff', async (req, res) => {
   }
 
   try {
-    const projectPath = await getActualProjectPath(project);
+    const projectRuntime = await resolveGitProjectRuntime(project, req.user?.id || null);
+    const projectPath = projectRuntime.projectPath;
 
     // Validate commit reference (defense-in-depth)
     validateCommitRef(commit);
 
     // Get diff for the commit
-    const { stdout } = await spawnAsync(
-      'git', ['show', commit],
+    const { stdout } = await runGit(projectRuntime, ['show', commit],
       { cwd: projectPath }
     );
 
@@ -852,17 +797,17 @@ router.post('/generate-commit-message', async (req, res) => {
   }
 
   try {
-    const projectPath = await getActualProjectPath(project);
-    await validateGitRepository(projectPath);
-    const repositoryRootPath = await getRepositoryRootPath(projectPath);
+    const projectRuntime = await resolveGitProjectRuntime(project, req.user?.id || null);
+    const projectPath = projectRuntime.projectPath;
+    await validateGitRepository(projectRuntime);
+    const repositoryRootPath = await getRepositoryRootPath(projectRuntime);
 
     // Get diff for selected files
     let diffContext = '';
     for (const file of files) {
       try {
-        const { repositoryRelativeFilePath } = await resolveRepositoryFilePath(projectPath, file);
-        const { stdout } = await spawnAsync(
-          'git', ['diff', 'HEAD', '--', repositoryRelativeFilePath],
+        const { repositoryRelativeFilePath } = await resolveRepositoryFilePath(projectRuntime, file);
+        const { stdout } = await runGit(projectRuntime, ['diff', 'HEAD', '--', repositoryRelativeFilePath],
           { cwd: repositoryRootPath }
         );
         if (stdout) {
@@ -875,15 +820,14 @@ router.post('/generate-commit-message', async (req, res) => {
 
     // If no diff found, might be untracked files
     if (!diffContext.trim()) {
-      // Try to get content of untracked files
       for (const file of files) {
         try {
-          const { repositoryRelativeFilePath } = await resolveRepositoryFilePath(projectPath, file);
+          const { repositoryRelativeFilePath } = await resolveRepositoryFilePath(projectRuntime, file);
           const filePath = path.join(repositoryRootPath, repositoryRelativeFilePath);
-          const stats = await fs.stat(filePath);
+          const fileStat = await projectRuntime.adapter.files.stat(filePath, { scopeRoot: repositoryRootPath });
 
-          if (!stats.isDirectory()) {
-            const content = await fs.readFile(filePath, 'utf-8');
+          if (fileStat.entryType !== 'directory') {
+            const content = (await projectRuntime.adapter.files.readText(filePath, { scopeRoot: repositoryRootPath })).content;
             diffContext += `\n--- ${repositoryRelativeFilePath} (new file) ---\n${content.substring(0, 1000)}\n`;
           } else {
             diffContext += `\n--- ${repositoryRelativeFilePath} (new directory) ---\n`;
@@ -895,7 +839,7 @@ router.post('/generate-commit-message', async (req, res) => {
     }
 
     // Generate commit message using AI
-    const message = await generateCommitMessageWithAI(files, diffContext, provider, projectPath);
+    const message = await generateCommitMessageWithAI(files, diffContext, provider, getCommitMessageProjectCwd(projectRuntime));
 
     res.json({ message });
   } catch (error) {
@@ -1052,13 +996,14 @@ router.get('/remote-status', async (req, res) => {
   }
 
   try {
-    const projectPath = await getActualProjectPath(project);
-    await validateGitRepository(projectPath);
+    const projectRuntime = await resolveGitProjectRuntime(project, req.user?.id || null);
+    const projectPath = projectRuntime.projectPath;
+    await validateGitRepository(projectRuntime);
 
-    const branch = await getCurrentBranchName(projectPath);
-    const hasCommits = await repositoryHasCommits(projectPath);
+    const branch = await getCurrentBranchName(projectRuntime);
+    const hasCommits = await repositoryHasCommits(projectRuntime);
 
-    const { stdout: remoteOutput } = await spawnAsync('git', ['remote'], { cwd: projectPath });
+    const { stdout: remoteOutput } = await runGit(projectRuntime, ['remote'], { cwd: projectPath });
     const remotes = remoteOutput.trim().split('\n').filter(r => r.trim());
     const hasRemote = remotes.length > 0;
     const fallbackRemoteName = hasRemote
@@ -1084,7 +1029,7 @@ router.get('/remote-status', async (req, res) => {
     let trackingBranch;
     let remoteName;
     try {
-      const { stdout } = await spawnAsync('git', ['rev-parse', '--abbrev-ref', `${branch}@{upstream}`], { cwd: projectPath });
+      const { stdout } = await runGit(projectRuntime, ['rev-parse', '--abbrev-ref', `${branch}@{upstream}`], { cwd: projectPath });
       trackingBranch = stdout.trim();
       remoteName = trackingBranch.split('/')[0]; // Extract remote name (e.g., "origin/main" -> "origin")
     } catch (error) {
@@ -1098,8 +1043,7 @@ router.get('/remote-status', async (req, res) => {
     }
 
     // Get ahead/behind counts
-    const { stdout: countOutput } = await spawnAsync(
-      'git', ['rev-list', '--count', '--left-right', `${trackingBranch}...HEAD`],
+    const { stdout: countOutput } = await runGit(projectRuntime, ['rev-list', '--count', '--left-right', `${trackingBranch}...HEAD`],
       { cwd: projectPath }
     );
     
@@ -1130,15 +1074,16 @@ router.post('/fetch', async (req, res) => {
   }
 
   try {
-    const projectPath = await getActualProjectPath(project);
-    await validateGitRepository(projectPath);
+    const projectRuntime = await resolveGitProjectRuntime(project, req.user?.id || null);
+    const projectPath = projectRuntime.projectPath;
+    await validateGitRepository(projectRuntime);
 
     // Get current branch and its upstream remote
-    const branch = await getCurrentBranchName(projectPath);
+    const branch = await getCurrentBranchName(projectRuntime);
 
     let remoteName = 'origin'; // fallback
     try {
-      const { stdout } = await spawnAsync('git', ['rev-parse', '--abbrev-ref', `${branch}@{upstream}`], { cwd: projectPath });
+      const { stdout } = await runGit(projectRuntime, ['rev-parse', '--abbrev-ref', `${branch}@{upstream}`], { cwd: projectPath });
       remoteName = stdout.trim().split('/')[0]; // Extract remote name
     } catch (error) {
       // No upstream, try to fetch from origin anyway
@@ -1146,7 +1091,7 @@ router.post('/fetch', async (req, res) => {
     }
 
     validateRemoteName(remoteName);
-    const { stdout } = await spawnAsync('git', ['fetch', remoteName], { cwd: projectPath });
+    const { stdout } = await runGit(projectRuntime, ['fetch', remoteName], { cwd: projectPath });
 
     res.json({ success: true, output: stdout || 'Fetch completed successfully', remoteName });
   } catch (error) {
@@ -1171,16 +1116,17 @@ router.post('/pull', async (req, res) => {
   }
 
   try {
-    const projectPath = await getActualProjectPath(project);
-    await validateGitRepository(projectPath);
+    const projectRuntime = await resolveGitProjectRuntime(project, req.user?.id || null);
+    const projectPath = projectRuntime.projectPath;
+    await validateGitRepository(projectRuntime);
 
     // Get current branch and its upstream remote
-    const branch = await getCurrentBranchName(projectPath);
+    const branch = await getCurrentBranchName(projectRuntime);
 
     let remoteName = 'origin'; // fallback
     let remoteBranch = branch; // fallback
     try {
-      const { stdout } = await spawnAsync('git', ['rev-parse', '--abbrev-ref', `${branch}@{upstream}`], { cwd: projectPath });
+      const { stdout } = await runGit(projectRuntime, ['rev-parse', '--abbrev-ref', `${branch}@{upstream}`], { cwd: projectPath });
       const tracking = stdout.trim();
       remoteName = tracking.split('/')[0]; // Extract remote name
       remoteBranch = tracking.split('/').slice(1).join('/'); // Extract branch name
@@ -1191,7 +1137,7 @@ router.post('/pull', async (req, res) => {
 
     validateRemoteName(remoteName);
     validateBranchName(remoteBranch);
-    const { stdout } = await spawnAsync('git', ['pull', remoteName, remoteBranch], { cwd: projectPath });
+    const { stdout } = await runGit(projectRuntime, ['pull', remoteName, remoteBranch], { cwd: projectPath });
 
     res.json({
       success: true,
@@ -1239,16 +1185,17 @@ router.post('/push', async (req, res) => {
   }
 
   try {
-    const projectPath = await getActualProjectPath(project);
-    await validateGitRepository(projectPath);
+    const projectRuntime = await resolveGitProjectRuntime(project, req.user?.id || null);
+    const projectPath = projectRuntime.projectPath;
+    await validateGitRepository(projectRuntime);
 
     // Get current branch and its upstream remote
-    const branch = await getCurrentBranchName(projectPath);
+    const branch = await getCurrentBranchName(projectRuntime);
 
     let remoteName = 'origin'; // fallback
     let remoteBranch = branch; // fallback
     try {
-      const { stdout } = await spawnAsync('git', ['rev-parse', '--abbrev-ref', `${branch}@{upstream}`], { cwd: projectPath });
+      const { stdout } = await runGit(projectRuntime, ['rev-parse', '--abbrev-ref', `${branch}@{upstream}`], { cwd: projectPath });
       const tracking = stdout.trim();
       remoteName = tracking.split('/')[0]; // Extract remote name
       remoteBranch = tracking.split('/').slice(1).join('/'); // Extract branch name
@@ -1259,7 +1206,7 @@ router.post('/push', async (req, res) => {
 
     validateRemoteName(remoteName);
     validateBranchName(remoteBranch);
-    const { stdout } = await spawnAsync('git', ['push', remoteName, remoteBranch], { cwd: projectPath });
+    const { stdout } = await runGit(projectRuntime, ['push', remoteName, remoteBranch], { cwd: projectPath });
 
     res.json({
       success: true,
@@ -1310,14 +1257,15 @@ router.post('/publish', async (req, res) => {
   }
 
   try {
-    const projectPath = await getActualProjectPath(project);
-    await validateGitRepository(projectPath);
+    const projectRuntime = await resolveGitProjectRuntime(project, req.user?.id || null);
+    const projectPath = projectRuntime.projectPath;
+    await validateGitRepository(projectRuntime);
 
     // Validate branch name
     validateBranchName(branch);
 
     // Get current branch to verify it matches the requested branch
-    const currentBranchName = await getCurrentBranchName(projectPath);
+    const currentBranchName = await getCurrentBranchName(projectRuntime);
 
     if (currentBranchName !== branch) {
       return res.status(400).json({
@@ -1328,7 +1276,7 @@ router.post('/publish', async (req, res) => {
     // Check if remote exists
     let remoteName = 'origin';
     try {
-      const { stdout } = await spawnAsync('git', ['remote'], { cwd: projectPath });
+      const { stdout } = await runGit(projectRuntime, ['remote'], { cwd: projectPath });
       const remotes = stdout.trim().split('\n').filter(r => r.trim());
       if (remotes.length === 0) {
         return res.status(400).json({
@@ -1344,7 +1292,7 @@ router.post('/publish', async (req, res) => {
 
     // Publish the branch (set upstream and push)
     validateRemoteName(remoteName);
-    const { stdout } = await spawnAsync('git', ['push', '--set-upstream', remoteName, branch], { cwd: projectPath });
+    const { stdout } = await runGit(projectRuntime, ['push', '--set-upstream', remoteName, branch], { cwd: projectPath });
     
     res.json({ 
       success: true, 
@@ -1389,17 +1337,16 @@ router.post('/discard', async (req, res) => {
   }
 
   try {
-    const projectPath = await getActualProjectPath(project);
-    await validateGitRepository(projectPath);
+    const projectRuntime = await resolveGitProjectRuntime(project, req.user?.id || null);
+    const projectPath = projectRuntime.projectPath;
+    await validateGitRepository(projectRuntime);
     const {
       repositoryRootPath,
       repositoryRelativeFilePath,
-    } = await resolveRepositoryFilePath(projectPath, file);
+    } = await resolveRepositoryFilePath(projectRuntime, file);
 
     // Check file status to determine correct discard command
-    const { stdout: statusOutput } = await spawnAsync(
-      'git',
-      ['status', '--porcelain', '--', repositoryRelativeFilePath],
+    const { stdout: statusOutput } = await runGit(projectRuntime, ['status', '--porcelain', '--', repositoryRelativeFilePath],
       { cwd: repositoryRootPath },
     );
 
@@ -1410,21 +1357,14 @@ router.post('/discard', async (req, res) => {
     const status = statusOutput.substring(0, 2);
 
     if (status === '??') {
-      // Untracked file or directory - delete it
       const filePath = path.join(repositoryRootPath, repositoryRelativeFilePath);
-      const stats = await fs.stat(filePath);
-
-      if (stats.isDirectory()) {
-        await fs.rm(filePath, { recursive: true, force: true });
-      } else {
-        await fs.unlink(filePath);
-      }
+      await projectRuntime.adapter.files.deleteEntry(filePath, { scopeRoot: repositoryRootPath });
     } else if (status.includes('M') || status.includes('D')) {
       // Modified or deleted file - restore from HEAD
-      await spawnAsync('git', ['restore', '--', repositoryRelativeFilePath], { cwd: repositoryRootPath });
+      await runGit(projectRuntime, ['restore', '--', repositoryRelativeFilePath], { cwd: repositoryRootPath });
     } else if (status.includes('A')) {
       // Added file - unstage it
-      await spawnAsync('git', ['reset', 'HEAD', '--', repositoryRelativeFilePath], { cwd: repositoryRootPath });
+      await runGit(projectRuntime, ['reset', 'HEAD', '--', repositoryRelativeFilePath], { cwd: repositoryRootPath });
     }
     
     res.json({ success: true, message: `Changes discarded for ${repositoryRelativeFilePath}` });
@@ -1443,17 +1383,16 @@ router.post('/delete-untracked', async (req, res) => {
   }
 
   try {
-    const projectPath = await getActualProjectPath(project);
-    await validateGitRepository(projectPath);
+    const projectRuntime = await resolveGitProjectRuntime(project, req.user?.id || null);
+    const projectPath = projectRuntime.projectPath;
+    await validateGitRepository(projectRuntime);
     const {
       repositoryRootPath,
       repositoryRelativeFilePath,
-    } = await resolveRepositoryFilePath(projectPath, file);
+    } = await resolveRepositoryFilePath(projectRuntime, file);
 
     // Check if file is actually untracked
-    const { stdout: statusOutput } = await spawnAsync(
-      'git',
-      ['status', '--porcelain', '--', repositoryRelativeFilePath],
+    const { stdout: statusOutput } = await runGit(projectRuntime, ['status', '--porcelain', '--', repositoryRelativeFilePath],
       { cwd: repositoryRootPath },
     );
     
@@ -1467,16 +1406,13 @@ router.post('/delete-untracked', async (req, res) => {
       return res.status(400).json({ error: 'File is not untracked. Use discard for tracked files.' });
     }
 
-    // Delete the untracked file or directory
     const filePath = path.join(repositoryRootPath, repositoryRelativeFilePath);
-    const stats = await fs.stat(filePath);
+    const fileStat = await projectRuntime.adapter.files.stat(filePath, { scopeRoot: repositoryRootPath });
+    await projectRuntime.adapter.files.deleteEntry(filePath, { scopeRoot: repositoryRootPath });
 
-    if (stats.isDirectory()) {
-      // Use rm with recursive option for directories
-      await fs.rm(filePath, { recursive: true, force: true });
+    if (fileStat.entryType === 'directory') {
       res.json({ success: true, message: `Untracked directory ${repositoryRelativeFilePath} deleted successfully` });
     } else {
-      await fs.unlink(filePath);
       res.json({ success: true, message: `Untracked file ${repositoryRelativeFilePath} deleted successfully` });
     }
   } catch (error) {

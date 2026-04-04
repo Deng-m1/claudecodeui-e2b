@@ -3,7 +3,9 @@ import type {
   AgentProvider,
   AuthStatus,
   ClaudeMcpFormState,
+  CodexFeatureToggles,
   CodexMcpFormState,
+  CodexPermissionMode,
   CodeEditorSettingsState,
   CursorPermissionsState,
   McpToolsResult,
@@ -87,6 +89,36 @@ export const DEFAULT_CURSOR_PERMISSIONS: CursorPermissionsState = {
   disallowedCommands: [],
   skipPermissions: false,
 };
+
+export const DEFAULT_CODEX_PERMISSION_MODE: CodexPermissionMode = 'bypassPermissions';
+
+export const DEFAULT_CODEX_FEATURE_TOGGLES: CodexFeatureToggles = {
+  multiAgent: true,
+  parallelFanOut: true,
+  reasoningSummaries: true,
+  shellTool: true,
+  webSearch: true,
+  networkAccess: true,
+};
+
+export const normalizeCodexPermissionMode = (value: unknown): CodexPermissionMode => {
+  if (value === 'default' || value === 'acceptEdits' || value === 'bypassPermissions') {
+    return value;
+  }
+
+  return DEFAULT_CODEX_PERMISSION_MODE;
+};
+
+export const normalizeCodexFeatureToggles = (
+  value: Partial<CodexFeatureToggles> | null | undefined,
+): CodexFeatureToggles => ({
+  multiAgent: value?.multiAgent !== false,
+  parallelFanOut: value?.parallelFanOut !== false,
+  reasoningSummaries: value?.reasoningSummaries !== false,
+  shellTool: value?.shellTool !== false,
+  webSearch: value?.webSearch !== false,
+  networkAccess: value?.networkAccess !== false,
+});
 
 export const AUTH_STATUS_ENDPOINTS: Record<AgentProvider, string> = {
   claude: '/api/cli/claude/status',

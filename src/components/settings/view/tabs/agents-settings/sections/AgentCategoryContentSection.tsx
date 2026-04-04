@@ -13,6 +13,8 @@ export default function AgentCategoryContentSection({
   onCursorPermissionsChange,
   codexPermissionMode,
   onCodexPermissionModeChange,
+  codexFeatureToggles,
+  onCodexFeatureTogglesChange,
   mcpServers,
   cursorMcpServers,
   codexMcpServers,
@@ -81,6 +83,8 @@ export default function AgentCategoryContentSection({
           agent="codex"
           permissionMode={codexPermissionMode}
           onPermissionModeChange={onCodexPermissionModeChange}
+          featureToggles={codexFeatureToggles}
+          onFeatureTogglesChange={onCodexFeatureTogglesChange}
         />
       )}
 

@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { api } from '../../../utils/api';
 import { useAuth } from '../../auth/context/AuthContext';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
+import type { WebSocketFeedMessage } from '../../../contexts/WebSocketContext';
 import type {
   TaskMasterContextError,
   TaskMasterContextValue,
@@ -57,7 +58,7 @@ export function useTaskMaster() {
 }
 
 export function TaskMasterProvider({ children }: { children: React.ReactNode }) {
-  const { latestMessage } = useWebSocket();
+  const { messageFeed } = useWebSocket();
   const { user, token, isLoading: isAuthLoading } = useAuth();
 
   const [projects, setProjects] = useState<TaskMasterProject[]>([]);
@@ -74,6 +75,7 @@ export function TaskMasterProvider({ children }: { children: React.ReactNode }) 
   const [error, setError] = useState<TaskMasterContextError | null>(null);
 
   const currentProjectNameRef = useRef<string | null>(null);
+  const lastProcessedMessageSequenceRef = useRef(0);
 
   useEffect(() => {
     currentProjectNameRef.current = currentProject?.name ?? null;
@@ -210,25 +212,36 @@ export function TaskMasterProvider({ children }: { children: React.ReactNode }) 
   }, [currentProject?.name, refreshTasks, token, user]);
 
   useEffect(() => {
-    const message = latestMessage as TaskMasterWebSocketMessage | null;
-    if (!isTaskMasterMessage(message)) {
+    const pendingMessages = messageFeed.filter(
+      (entry: WebSocketFeedMessage) => entry.sequence > lastProcessedMessageSequenceRef.current,
+    );
+
+    if (pendingMessages.length === 0) {
       return;
     }
 
-    if (message.type === 'taskmaster-project-updated' && message.projectName) {
-      void refreshProjects();
-      return;
-    }
+    for (const entry of pendingMessages) {
+      lastProcessedMessageSequenceRef.current = entry.sequence;
+      const message = entry.message as TaskMasterWebSocketMessage | null;
+      if (!isTaskMasterMessage(message)) {
+        continue;
+      }
 
-    if (message.type === 'taskmaster-tasks-updated' && message.projectName === currentProject?.name) {
-      void refreshTasks();
-      return;
-    }
+      if (message.type === 'taskmaster-project-updated' && message.projectName) {
+        void refreshProjects();
+        continue;
+      }
 
-    if (message.type === 'taskmaster-mcp-status-changed') {
-      void refreshMCPStatus();
+      if (message.type === 'taskmaster-tasks-updated' && message.projectName === currentProject?.name) {
+        void refreshTasks();
+        continue;
+      }
+
+      if (message.type === 'taskmaster-mcp-status-changed') {
+        void refreshMCPStatus();
+      }
     }
-  }, [currentProject?.name, latestMessage, refreshMCPStatus, refreshProjects, refreshTasks]);
+  }, [currentProject?.name, messageFeed, refreshMCPStatus, refreshProjects, refreshTasks]);
 
   const contextValue = useMemo<TaskMasterContextValue>(
     () => ({

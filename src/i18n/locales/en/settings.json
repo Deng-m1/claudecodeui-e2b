@@ -104,10 +104,125 @@
     "appearance": "Appearance",
     "git": "Git",
     "apiTokens": "API & Tokens",
+    "authCenter": "Auth Center",
     "tasks": "Tasks",
     "notifications": "Notifications",
     "plugins": "Plugins",
     "e2b": "E2B Cloud"
+  },
+  "authCenter": {
+    "title": "Auth Center",
+    "description": "CLIProxy-style auth management for Claude, Codex, Gemini, and Cursor. Create reusable profiles, complete callback or device login flows, and bind each project to Auto Copy, Disabled, or a saved profile.",
+    "project": "Project",
+    "sections": {
+      "projectBinding": {
+        "title": "Project Binding",
+        "description": "Choose which auth source each project should use. Cloud projects apply these selections inside E2B. Local projects keep the mapping in project config."
+      },
+      "oauth": {
+        "title": "OAuth Login Center",
+        "description": "Use the same callback paste-back flow as CLIProxyAPI. Start the login, open the authorization URL, then paste the final callback URL back here.",
+        "flowCount": "{{count}} flows"
+      },
+      "providers": {
+        "title": "{{provider}} Profiles",
+        "savedProfiles": "Saved Profiles"
+      }
+    },
+    "cards": {
+      "codexOauth": {
+        "title": "Codex OAuth",
+        "description": "Login through the Codex OAuth flow and save a reusable auth profile.",
+        "button": "Login"
+      },
+      "claudeOauth": {
+        "title": "Anthropic OAuth",
+        "description": "Login through the Anthropic OAuth flow and save a reusable Claude profile.",
+        "button": "Login"
+      },
+      "geminiOauth": {
+        "title": "Gemini OAuth",
+        "description": "Login through Google OAuth and save a reusable Gemini profile.",
+        "button": "Login"
+      },
+      "codexDevice": {
+        "title": "Codex Device Code",
+        "description": "Start a device-code login for environments where callback URL paste-back is easier.",
+        "button": "Start Device Login"
+      }
+    },
+    "actions": {
+      "refresh": "Refresh",
+      "save": "Save",
+      "login": "Login",
+      "startDeviceLogin": "Start Device Login",
+      "submitCallback": "Submit Callback URL",
+      "submitDeviceLogin": "Submit Device Login",
+      "saveCurrentHostAuth": "Save Current Host Auth",
+      "importPath": "Import Path",
+      "saveApiKeyProfile": "Save API Key Profile",
+      "openUrl": "Open URL",
+      "copy": "Copy",
+      "copied": "Copied",
+      "cancel": "Cancel",
+      "use": "Use",
+      "openCenter": "Open Auth Center"
+    },
+    "methods": {
+      "callback": "Paste Callback",
+      "device": "Device Code",
+      "apiKey": "API Key",
+      "path": "Import Path",
+      "host": "Host Snapshot"
+    },
+    "modes": {
+      "auto": "Auto Copy Host Auth",
+      "disabled": "Disabled"
+    },
+    "fields": {
+      "profileName": "{{provider}} profile name"
+    },
+    "placeholders": {
+      "profileName": "{{provider}} profile name",
+      "importPath": "Path to auth file or folder",
+      "apiKey": "Paste API key",
+      "callbackUrl": "http://localhost:1455/auth/callback?code=...&state=..."
+    },
+    "labels": {
+      "cloudProject": "Cloud",
+      "localProject": "Local",
+      "hostStatus": "Host Status",
+      "authorizationUrl": "Authorization URL",
+      "redirectUri": "Redirect URI",
+      "verificationUrl": "Verification URL",
+      "code": "Code",
+      "projectBadge": "Project",
+      "savedProfile": "Saved profile",
+      "files": "Files",
+      "env": "Env"
+    },
+    "hints": {
+      "remoteBrowserMode": "Remote browser mode: when the authorization flow redirects to http://localhost:..., copy the full callback URL and paste it below.",
+      "launcherDescription": "Default behavior is to mirror usable host auth into the E2B project. You can also bind a provider to a saved Auth Center profile or disable it for this cloud project.",
+      "savedProfilesFromCenter": "Profiles come from Settings > Auth Center.",
+      "createProfilesFirst": "Create reusable profiles in Settings > Auth Center first."
+    },
+    "messages": {
+      "projectMappingSaved": "Project auth mapping saved.",
+      "profileSaved": "{{provider}} profile saved.",
+      "profileDeleted": "Profile deleted.",
+      "clipboardFailed": "Clipboard access failed"
+    },
+    "empty": {
+      "noProjects": "No projects detected yet.",
+      "noSavedProfiles": "No saved profiles yet."
+    },
+    "status": {
+      "ready": "Ready",
+      "off": "Off",
+      "authenticated": "Authenticated",
+      "noHostAuth": "No host auth detected"
+    }
   },
   "notifications": {
     "title": "Notifications",
@@ -416,6 +531,35 @@
         "acceptEdits": "sandboxMode=workspace-write, approvalPolicy=never. All commands auto-execute within project directory.",
         "bypassPermissions": "sandboxMode=danger-full-access, approvalPolicy=never. Full system access, use only in trusted environments.",
         "overrideNote": "You can override this per-session using the mode button in the chat interface."
+      },
+      "features": {
+        "title": "Common Runtime Features",
+        "description": "Control the common Codex capabilities that should be enabled for new turns.",
+        "note": "These toggles map to Codex CLI feature flags or SDK thread options and take effect on the next Codex turn. MCP servers remain managed from the MCP tab.",
+        "multiAgent": {
+          "title": "Child Agents",
+          "description": "Allow Codex to delegate work to child agents during a run."
+        },
+        "parallelFanOut": {
+          "title": "Parallel Fan-Out",
+          "description": "Allow Codex to fan out work in parallel when the CLI supports it."
+        },
+        "reasoningSummaries": {
+          "title": "Reasoning Summaries",
+          "description": "Allow Codex to spend reasoning budget and emit reasoning summaries."
+        },
+        "shellTool": {
+          "title": "Shell Tool",
+          "description": "Allow Codex to execute shell commands through its shell tool."
+        },
+        "webSearch": {
+          "title": "Web Search",
+          "description": "Allow Codex to use live web search when it needs outside information."
+        },
+        "networkAccess": {
+          "title": "Network Access",
+          "description": "Allow outbound network access in workspace-write sandboxes."
+        }
       }
     },
     "actions": {
@@ -518,6 +662,7 @@
       "running": "Running",
       "idle": "No Active Sandbox"
     },
+    "template": "Template:",
     "availableAgents": "Available agents:",
     "openInspector": "Open Inspector",
     "controls": "Sandbox Controls",

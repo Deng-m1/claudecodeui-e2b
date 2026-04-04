@@ -93,7 +93,13 @@
     "createProjectDesktop": "点击侧边栏中的文件夹图标以创建新项目",
     "newSession": "新会话",
     "untitledSession": "未命名会话",
-    "projectFiles": "项目文件"
+    "projectFiles": "项目文件",
+    "forkedFrom": "Fork 自 {{id}}",
+    "forkedFromTooltip": "Fork 自 {{id}}",
+    "forks_one": "有 {{count}} 个 Fork",
+    "forks_other": "有 {{count}} 个 Fork",
+    "forksTooltip_one": "有 {{count}} 个 Fork",
+    "forksTooltip_other": "有 {{count}} 个 Fork"
   },
   "fileTree": {
     "loading": "正在加载文件...",
@@ -172,7 +178,20 @@
       "publicRepoInfo": "公共仓库不需要身份验证。如果克隆公共仓库，可以跳过提供令牌。",
       "noTokensHelp": "没有可用的已保存令牌。您可以在 设置 → API 密钥 中添加令牌以便重复使用。",
       "optionalTokenPublic": "GitHub 令牌（公共仓库可选）",
-      "tokenPublicPlaceholder": "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx（公共仓库可留空）"
+      "tokenPublicPlaceholder": "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx（公共仓库可留空）",
+      "browseFolders": "浏览目录",
+      "selectFolder": "选择目录",
+      "showHiddenFolders": "显示隐藏目录",
+      "hideHiddenFolders": "隐藏隐藏目录",
+      "createNewFolder": "新建文件夹",
+      "newFolderName": "新文件夹名称",
+      "createFolder": "创建",
+      "cancel": "取消",
+      "noSubfolders": "没有子目录",
+      "currentPath": "当前路径：",
+      "useFolder": "使用此目录",
+      "pathInputPlaceholder": "粘贴或输入目录路径",
+      "goToPath": "跳转"
     },
     "step3": {
       "reviewConfig": "查看您的配置",

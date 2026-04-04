@@ -114,6 +114,7 @@ function showStatus() {
     console.log(`       DATABASE_PATH: ${c.dim(process.env.DATABASE_PATH || '(using default location)')}`);
     console.log(`       CLAUDE_CLI_PATH: ${c.dim(process.env.CLAUDE_CLI_PATH || 'claude (default)')}`);
     console.log(`       CONTEXT_WINDOW: ${c.dim(process.env.CONTEXT_WINDOW || '160000 (default)')}`);
+    console.log(`       AUTH_DISABLE_REGISTRATION: ${c.dim(process.env.AUTH_DISABLE_REGISTRATION || 'false (default)')}`);
 
     // Claude projects folder
     const claudeProjectsPath = path.join(os.homedir(), '.claude', 'projects');
@@ -174,6 +175,8 @@ Environment Variables:
   DATABASE_PATH       Set custom database location
   CLAUDE_CLI_PATH     Set custom Claude CLI path
   CONTEXT_WINDOW      Set context window size (default: 160000)
+  AUTH_DISABLE_REGISTRATION
+                      Disable web self-registration and lock the instance to the existing owner account
 
 Documentation:
   ${packageJson.homepage || 'https://github.com/siteboon/claudecodeui'}

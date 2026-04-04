@@ -59,6 +59,14 @@ CREATE TABLE IF NOT EXISTS user_notification_preferences (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+-- User Claude permission settings (backend-owned runtime source of truth)
+CREATE TABLE IF NOT EXISTS user_claude_settings (
+    user_id INTEGER PRIMARY KEY,
+    settings_json TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 -- VAPID key pair for Web Push notifications
 CREATE TABLE IF NOT EXISTS vapid_keys (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -115,3 +123,59 @@ CREATE TABLE IF NOT EXISTS e2b_sandboxes (
 
 CREATE INDEX IF NOT EXISTS idx_e2b_sandboxes_user_id ON e2b_sandboxes(user_id);
 CREATE INDEX IF NOT EXISTS idx_e2b_sandboxes_status ON e2b_sandboxes(status);
+
+-- E2B cloud session records (session threads within a cloud project)
+CREATE TABLE IF NOT EXISTS e2b_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    sandbox_id TEXT NOT NULL,
+    session_id TEXT NOT NULL UNIQUE,
+    agent TEXT NOT NULL,
+    model TEXT,
+    summary TEXT,
+    status TEXT DEFAULT 'active',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_activity DATETIME DEFAULT CURRENT_TIMESTAMP,
+    metadata_json TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_e2b_sessions_user_id ON e2b_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_e2b_sessions_sandbox_id ON e2b_sessions(sandbox_id);
+
+-- E2B persisted normalized messages (backend-owned fallback when sandbox-agent
+-- does not retain session/event history across reconnects)
+CREATE TABLE IF NOT EXISTS e2b_session_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    timestamp TEXT,
+    message_json TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(session_id, message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_e2b_session_messages_session_id
+    ON e2b_session_messages(session_id, id);
+
+-- Auth center profiles for reusable provider credential/config snapshots
+CREATE TABLE IF NOT EXISTS auth_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    profile_name TEXT NOT NULL,
+    profile_type TEXT NOT NULL DEFAULT 'bundle',
+    source TEXT,
+    email TEXT,
+    summary TEXT,
+    payload_json TEXT NOT NULL,
+    metadata_json TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_profiles_user_id ON auth_profiles(user_id);
+CREATE INDEX IF NOT EXISTS idx_auth_profiles_provider ON auth_profiles(provider);
+CREATE INDEX IF NOT EXISTS idx_auth_profiles_user_provider ON auth_profiles(user_id, provider);

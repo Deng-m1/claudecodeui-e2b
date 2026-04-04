@@ -5,6 +5,7 @@
  * @module adapters/cursor
  */
 
+import { promises as fs } from 'node:fs';
 import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
@@ -152,43 +153,88 @@ export function normalizeMessage(raw, sessionId) {
   return [];
 }
 
+const snapshotCache = new Map();
+
+function buildCursorStoreDbPath(sessionId, projectPath = '') {
+  const cwdId = crypto.createHash('md5').update(projectPath || process.cwd()).digest('hex');
+  return path.join(os.homedir(), '.cursor', 'chats', cwdId, sessionId, 'store.db');
+}
+
+async function statSignature(filePath) {
+  try {
+    const stats = await fs.stat(filePath);
+    return `${filePath}:${stats.size}:${stats.mtimeMs}`;
+  } catch {
+    return `${filePath}:missing`;
+  }
+}
+
+async function loadHistorySnapshot(sessionId, opts = {}) {
+  const { projectPath = '' } = opts;
+  const cacheKey = `${projectPath}::${sessionId}`;
+  const storeDbPath = buildCursorStoreDbPath(sessionId, projectPath);
+  const fingerprint = await statSignature(storeDbPath);
+  const cached = snapshotCache.get(cacheKey);
+
+  if (cached && cached.fingerprint === fingerprint) {
+    return {
+      messages: cached.messages,
+      tokenUsage: null,
+      fingerprint,
+    };
+  }
+
+  const blobs = await loadCursorBlobs(sessionId, projectPath);
+  const messages = cursorAdapter.normalizeCursorBlobs(blobs, sessionId);
+  snapshotCache.set(cacheKey, { fingerprint, messages });
+
+  return {
+    messages,
+    tokenUsage: null,
+    fingerprint,
+  };
+}
+
+function paginateMessages(messages, limit = null, offset = 0) {
+  const total = messages.length;
+
+  if (limit !== null && limit > 0) {
+    const start = Math.max(0, Number(offset) || 0);
+    const safeLimit = Math.max(0, Number(limit) || 0);
+    return {
+      messages: messages.slice(start, start + safeLimit),
+      total,
+      hasMore: start + safeLimit < total,
+      offset: start,
+      limit: safeLimit,
+    };
+  }
+
+  return {
+    messages,
+    total,
+    hasMore: false,
+    offset: 0,
+    limit: null,
+  };
+}
+
 /**
  * @type {import('../types.js').ProviderAdapter}
  */
 export const cursorAdapter = {
   normalizeMessage,
+  loadHistorySnapshot,
   /**
    * Fetch session history for Cursor from SQLite store.db.
    */
   async fetchHistory(sessionId, opts = {}) {
-    const { projectPath = '', limit = null, offset = 0 } = opts;
+    const { limit = null, offset = 0 } = opts;
 
     try {
-      const blobs = await loadCursorBlobs(sessionId, projectPath);
-      const allNormalized = cursorAdapter.normalizeCursorBlobs(blobs, sessionId);
-
-      // Apply pagination
-      if (limit !== null && limit > 0) {
-        const start = offset;
-        const page = allNormalized.slice(start, start + limit);
-        return {
-          messages: page,
-          total: allNormalized.length,
-          hasMore: start + limit < allNormalized.length,
-          offset,
-          limit,
-        };
-      }
-
-      return {
-        messages: allNormalized,
-        total: allNormalized.length,
-        hasMore: false,
-        offset: 0,
-        limit: null,
-      };
+      const snapshot = await loadHistorySnapshot(sessionId, opts);
+      return paginateMessages(snapshot.messages, limit, offset);
     } catch (error) {
-      // DB doesn't exist or is unreadable — return empty
       console.warn(`[CursorAdapter] Failed to load session ${sessionId}:`, error.message);
       return { messages: [], total: 0, hasMore: false, offset: 0, limit: null };
     }

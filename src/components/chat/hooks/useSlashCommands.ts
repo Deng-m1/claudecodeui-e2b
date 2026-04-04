@@ -3,7 +3,8 @@ import type { Dispatch, KeyboardEvent, RefObject, SetStateAction } from 'react';
 import Fuse from 'fuse.js';
 import { authenticatedFetch } from '../../../utils/api';
 import { safeLocalStorage } from '../utils/chatStorage';
-import type { Project } from '../../../types/app';
+import type { Project, ProjectSession } from '../../../types/app';
+import { isCloudSelection } from '../../../utils/sessionSelection';
 
 const COMMAND_QUERY_DEBOUNCE_MS = 150;
 
@@ -19,6 +20,7 @@ export interface SlashCommand {
 
 interface UseSlashCommandsOptions {
   selectedProject: Project | null;
+  selectedSession: ProjectSession | null;
   input: string;
   setInput: Dispatch<SetStateAction<string>>;
   textareaRef: RefObject<HTMLTextAreaElement>;
@@ -50,6 +52,7 @@ const isPromiseLike = (value: unknown): value is Promise<unknown> =>
 
 export function useSlashCommands({
   selectedProject,
+  selectedSession,
   input,
   setInput,
   textareaRef,
@@ -82,6 +85,12 @@ export function useSlashCommands({
   useEffect(() => {
     const fetchCommands = async () => {
       if (!selectedProject) {
+        setSlashCommands([]);
+        setFilteredCommands([]);
+        return;
+      }
+
+      if (isCloudSelection(selectedProject, selectedSession)) {
         setSlashCommands([]);
         setFilteredCommands([]);
         return;
@@ -129,7 +138,7 @@ export function useSlashCommands({
     };
 
     fetchCommands();
-  }, [selectedProject]);
+  }, [selectedProject, selectedSession]);
 
   useEffect(() => {
     if (!showCommandMenu) {

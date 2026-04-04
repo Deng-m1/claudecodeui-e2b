@@ -1,9 +1,10 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 
 interface CollapsibleSectionProps {
   title: string;
   toolName?: string;
   open?: boolean;
+  resetKey?: string;
   action?: React.ReactNode;
   onTitleClick?: () => void;
   children: React.ReactNode;
@@ -17,13 +18,24 @@ export const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
   title,
   toolName,
   open = false,
+  resetKey,
   action,
   onTitleClick,
   children,
   className = ''
 }) => {
+  const [isOpen, setIsOpen] = useState(Boolean(open));
+
+  useEffect(() => {
+    setIsOpen(Boolean(open));
+  }, [open, resetKey]);
+
   return (
-    <details className={`group/details relative ${className}`} open={open}>
+    <details
+      className={`group/details relative ${className}`}
+      open={isOpen}
+      onToggle={(event) => setIsOpen(event.currentTarget.open)}
+    >
       <summary className="flex cursor-pointer select-none items-center gap-1.5 py-0.5 text-xs group-open/details:sticky group-open/details:top-0 group-open/details:z-10 group-open/details:-mx-1 group-open/details:bg-background group-open/details:px-1">
         <svg
           className="h-3 w-3 flex-shrink-0 text-gray-400 transition-transform duration-150 group-open/details:rotate-90 dark:text-gray-500"

@@ -8,15 +8,16 @@
 import express from 'express';
 import {
   isE2BEnabled,
+  isE2BConfigured,
   createSandbox,
   connectToSandbox,
   pauseSandbox,
   resumeSandbox,
   destroySandbox,
-  disposeSandbox,
   listSandboxAgents,
   getSandboxStatus,
   getSandboxClient,
+  getNativeCliRuntimeStatus,
   setupGitCredentials,
 } from '../providers/e2b/sandbox-manager.js';
 import {
@@ -27,39 +28,146 @@ import {
   isE2BSessionActive,
   getActiveE2BSessions,
 } from '../providers/e2b/session-bridge.js';
-import { e2bSandboxDb, credentialsDb, userDb } from '../database/db.js';
+import {
+  extractE2BAuthSelectionsFromMetadata,
+  getDefaultE2BAuthSelections,
+  getE2BAuthOverview,
+  normalizeE2BAuthSelections,
+  resolveE2BAuthBundle,
+  sanitizeE2BAuthSelections,
+  summarizeE2BAuthBundle,
+  syncE2BAuthToSandbox,
+} from '../providers/e2b/auth-sync.js';
+import { resolveSandboxConnectHostFromRequest } from '../providers/e2b/connect-host.js';
+import { e2bSandboxDb, e2bSessionDb, e2bSessionMessagesDb, credentialsDb, sessionNamesDb, userDb } from '../database/db.js';
 
 const router = express.Router();
+
+function parseMetadataJson(value) {
+  if (!value) {
+    return null;
+  }
+
+  if (typeof value === 'object') {
+    return value;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function resolveSandboxConnectHost(req, sandboxRecord = null) {
+  return resolveSandboxConnectHostFromRequest(req, sandboxRecord);
+}
+
+async function buildSandboxRuntimeContext(req, inputSelections = null, options = {}) {
+  const { sandboxRecord = null, strict = true } = options;
+  const overview = await getE2BAuthOverview();
+  const sandboxConnectHost = resolveSandboxConnectHost(req, sandboxRecord);
+
+  const baseSelections = sandboxRecord
+    ? extractE2BAuthSelectionsFromMetadata(sandboxRecord.metadata_json, overview)
+    : getDefaultE2BAuthSelections(overview);
+
+  const normalizedSelections = inputSelections
+    ? normalizeE2BAuthSelections({ ...baseSelections, ...inputSelections }, overview)
+    : baseSelections;
+
+  const authBundle = await resolveE2BAuthBundle(normalizedSelections, {
+    strict,
+    overview,
+    userId: req.user.id,
+    sandboxConnectHost,
+    refreshClaudeProfiles: false,
+  });
+
+  const envs = { ...authBundle.envs };
+  const githubToken = credentialsDb.getActiveCredential(req.user.id, 'github_oauth');
+  if (githubToken) {
+    envs.GITHUB_TOKEN = githubToken;
+  }
+
+  return {
+    overview,
+    authBundle,
+    envs,
+    authSelections: sanitizeE2BAuthSelections(normalizedSelections, overview),
+    authSummary: summarizeE2BAuthBundle(authBundle),
+    sandboxConnectHost,
+  };
+}
+
+async function applySandboxGitIdentity(req, client) {
+  const gitConfig = userDb.getGitConfig(req.user.id);
+  if (!gitConfig?.git_name && !gitConfig?.git_email) {
+    return;
+  }
+
+  await setupGitCredentials(client, {
+    gitName: gitConfig.git_name || undefined,
+    gitEmail: gitConfig.git_email || undefined,
+  });
+}
 
 // --- Sandbox Lifecycle ---
 
 router.get('/status', (req, res) => {
   res.json({
     success: true,
+    configured: isE2BConfigured(),
     enabled: isE2BEnabled(),
     ...getSandboxStatus(),
   });
 });
 
+router.get('/sandbox/native-cli-status', async (_req, res) => {
+  try {
+    const nativeCli = await getNativeCliRuntimeStatus();
+    res.json({
+      success: true,
+      ...getSandboxStatus(),
+      nativeCli,
+    });
+  } catch (error) {
+    console.error('[E2B Route] Native CLI status error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/auth-sources', async (req, res) => {
+  try {
+    const overview = await getE2BAuthOverview();
+    res.json({
+      success: true,
+      providers: overview,
+      defaultSelections: getDefaultE2BAuthSelections(overview),
+    });
+  } catch (error) {
+    console.error('[E2B Route] Auth sources error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 router.post('/sandbox/create', async (req, res) => {
   try {
-    const { template, envs: userEnvs } = req.body || {};
-    const envs = { ...userEnvs };
-    // Inject GitHub OAuth token if user has one connected
-    const githubToken = credentialsDb.getActiveCredential(req.user.id, 'github_oauth');
-    if (githubToken && !envs.GITHUB_TOKEN) {
-      envs.GITHUB_TOKEN = githubToken;
-    }
-    const client = await createSandbox({ template, envs });
-    // Apply user's git identity if configured
-    const gitConfig = userDb.getGitConfig(req.user.id);
-    if (gitConfig?.git_name || gitConfig?.git_email) {
-      await setupGitCredentials(client, {
-        gitName: gitConfig.git_name || undefined,
-        gitEmail: gitConfig.git_email || undefined,
-      });
-    }
-    res.json({ success: true, ...getSandboxStatus() });
+    const { template, envs: userEnvs, authSelections } = req.body || {};
+    const runtimeContext = await buildSandboxRuntimeContext(req, authSelections);
+    const envs = { ...runtimeContext.envs, ...(userEnvs || {}) };
+    const client = await createSandbox({ template, envs, forceNew: true });
+
+    await syncE2BAuthToSandbox(client, runtimeContext.authBundle);
+    await applySandboxGitIdentity(req, client);
+    const nativeCli = await getNativeCliRuntimeStatus(client);
+
+    res.json({
+      success: true,
+      authSummary: runtimeContext.authSummary,
+      nativeCli,
+      ...getSandboxStatus(),
+    });
   } catch (error) {
     console.error('[E2B Route] Create sandbox error:', error);
     res.status(500).json({ success: false, error: error.message });
@@ -96,17 +204,29 @@ router.post('/sandbox/pause', async (req, res) => {
 
 router.post('/sandbox/resume', async (req, res) => {
   try {
-    const { sandboxId } = req.body || {};
+    const { sandboxId, authSelections } = req.body || {};
     if (!sandboxId) {
       return res.status(400).json({ success: false, error: 'sandboxId is required' });
     }
-    // Pass GitHub OAuth token so the resumed sandbox can push/PR
-    const githubToken = credentialsDb.getActiveCredential(req.user.id, 'github_oauth');
-    const envs = {};
-    if (githubToken) envs.GITHUB_TOKEN = githubToken;
-    await resumeSandbox(sandboxId, envs);
+
+    const sandboxRecord = e2bSandboxDb.getBySandboxId(sandboxId);
+    const runtimeContext = await buildSandboxRuntimeContext(req, authSelections, {
+      sandboxRecord,
+      strict: false,
+    });
+
+    const client = await resumeSandbox(sandboxId, runtimeContext.envs);
+    await syncE2BAuthToSandbox(client, runtimeContext.authBundle);
+    await applySandboxGitIdentity(req, client);
+    const nativeCli = await getNativeCliRuntimeStatus(client);
+
     e2bSandboxDb.updateStatus(sandboxId, 'running');
-    res.json({ success: true, ...getSandboxStatus() });
+    res.json({
+      success: true,
+      authSummary: runtimeContext.authSummary,
+      nativeCli,
+      ...getSandboxStatus(),
+    });
   } catch (error) {
     console.error('[E2B Route] Resume sandbox error:', error);
     res.status(500).json({ success: false, error: error.message });
@@ -132,29 +252,21 @@ router.post('/sandbox/destroy', async (req, res) => {
  */
 router.post('/sandbox/create-with-repo', async (req, res) => {
   try {
-    const { repoUrl, branch, template, envs: extraEnvs } = req.body || {};
+    const { repoUrl, branch, template, envs: extraEnvs, authSelections } = req.body || {};
     if (!repoUrl) {
       return res.status(400).json({ success: false, error: 'repoUrl is required' });
     }
 
-    // Resolve GitHub token for private repos
-    const githubToken = credentialsDb.getActiveCredential(req.user.id, 'github_oauth');
-    const envs = { ...extraEnvs };
-    if (githubToken) {
-      envs.GITHUB_TOKEN = githubToken;
-    }
+    const runtimeContext = await buildSandboxRuntimeContext(req, authSelections);
+    const envs = { ...runtimeContext.envs, ...(extraEnvs || {}) };
 
     // Create sandbox (this also sets up git credential helper via setupGitCredentials)
-    const client = await createSandbox({ template, envs });
+    const client = await createSandbox({ template, envs, forceNew: true });
+    await syncE2BAuthToSandbox(client, runtimeContext.authBundle);
 
     // Re-run credential setup with user's real git identity if configured
-    const gitConfig = userDb.getGitConfig(req.user.id);
-    if (gitConfig?.git_name || gitConfig?.git_email) {
-      await setupGitCredentials(client, {
-        gitName: gitConfig.git_name || undefined,
-        gitEmail: gitConfig.git_email || undefined,
-      });
-    }
+    await applySandboxGitIdentity(req, client);
+    const nativeCli = await getNativeCliRuntimeStatus(client);
 
     // Normalize clone URL to plain HTTPS (credential helper provides auth)
     let cloneUrl = repoUrl;
@@ -171,7 +283,8 @@ router.post('/sandbox/create-with-repo', async (req, res) => {
     // Run git clone inside sandbox (credential helper handles authentication)
     console.log(`[E2B] Cloning ${repoUrl} (branch: ${branch || 'default'}) into sandbox...`);
     await client.runProcess({
-      cmd: ['bash', '-c', `git clone ${branchArg} '${cloneUrl}' '${workspacePath}' 2>&1`],
+      command: 'bash',
+      args: ['-c', `git clone ${branchArg} '${cloneUrl}' '${workspacePath}' 2>&1`],
     });
     console.log(`[E2B] Clone complete: ${workspacePath}`);
 
@@ -181,6 +294,11 @@ router.post('/sandbox/create-with-repo', async (req, res) => {
       repoUrl,
       branch: branch || 'main',
       workspacePath,
+      metadata: {
+        authSelections: runtimeContext.authSelections,
+        authSummary: runtimeContext.authSummary,
+        sandboxConnectHost: runtimeContext.sandboxConnectHost || null,
+      },
     });
 
     res.json({
@@ -188,6 +306,8 @@ router.post('/sandbox/create-with-repo', async (req, res) => {
       sandboxId: status.sandboxId,
       workspacePath,
       inspectorUrl: status.inspectorUrl,
+      authSummary: runtimeContext.authSummary,
+      nativeCli,
     });
   } catch (error) {
     console.error('[E2B Route] Create with repo error:', error);
@@ -222,7 +342,8 @@ router.post('/sandbox/git-save', async (req, res) => {
     const message = commitMessage || `auto-save ${new Date().toISOString()}`;
 
     const result = await client.runProcess({
-      cmd: ['bash', '-c', `cd '${cwd}' && git add -A && git diff --cached --quiet || git commit -m '${message.replace(/'/g, "'\\''")}' && git push 2>&1`],
+      command: 'bash',
+      args: ['-c', `cd '${cwd}' && git add -A && git diff --cached --quiet || git commit -m '${message.replace(/'/g, "'\\''")}' && git push 2>&1`],
     });
 
     res.json({ success: true, output: result.stdout || '' });
@@ -246,11 +367,18 @@ router.get('/sandbox/agents', async (req, res) => {
 
 router.post('/sessions/create', async (req, res) => {
   try {
-    const { sessionId, agent, cwd, model } = req.body || {};
+    const { sessionId, agent, cwd, model, sandboxId } = req.body || {};
     if (!sessionId || !agent) {
       return res.status(400).json({ success: false, error: 'sessionId and agent are required' });
     }
-    const result = await createE2BSession(sessionId, { agent, cwd, model });
+    const result = await createE2BSession(sessionId, {
+      agent,
+      cwd,
+      model,
+      sandboxId,
+      resume: false,
+      sandboxConnectHost: resolveSandboxConnectHost(req),
+    });
     res.json({ success: true, ...result });
   } catch (error) {
     console.error('[E2B Route] Create session error:', error);
@@ -265,7 +393,9 @@ router.post('/sessions/:sessionId/message', async (req, res) => {
     if (!message) {
       return res.status(400).json({ success: false, error: 'message is required' });
     }
-    await sendMessageToE2BSession(sessionId, message);
+    await sendMessageToE2BSession(sessionId, message, {
+      sandboxConnectHost: resolveSandboxConnectHost(req),
+    });
     res.json({ success: true });
   } catch (error) {
     console.error('[E2B Route] Send message error:', error);
@@ -295,6 +425,20 @@ router.post('/sessions/:sessionId/abort', async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('[E2B Route] Abort session error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.delete('/sessions/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    await abortE2BSession(sessionId);
+    e2bSessionMessagesDb.deleteBySessionId(sessionId);
+    e2bSessionDb.delete(sessionId);
+    sessionNamesDb.deleteName(sessionId, 'e2b');
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[E2B Route] Delete session error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

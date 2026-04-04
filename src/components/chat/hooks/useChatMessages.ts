@@ -6,6 +6,7 @@
 import type { NormalizedMessage } from '../../../stores/useSessionStore';
 import type { ChatMessage, SubagentChildTool } from '../types/types';
 import { decodeHtmlEntities, unescapeWithMathProtection, formatUsageLimitText } from '../utils/chatFormatting';
+import { normalizeToolDisplayCall } from '../utils/toolNormalization';
 
 /**
  * Convert NormalizedMessage[] from the session store into ChatMessage[]
@@ -64,17 +65,19 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
       }
 
       case 'tool_use': {
+        const normalizedTool = normalizeToolDisplayCall(msg.toolName, msg.toolInput);
         const tr = msg.toolResult || (msg.toolId ? toolResultMap.get(msg.toolId) : null);
-        const isSubagentContainer = msg.toolName === 'Task';
+        const isSubagentContainer = normalizedTool.toolName === 'Task';
 
         // Build child tools from subagentTools
         const childTools: SubagentChildTool[] = [];
         if (isSubagentContainer && msg.subagentTools && Array.isArray(msg.subagentTools)) {
           for (const tool of msg.subagentTools as any[]) {
+            const normalizedChildTool = normalizeToolDisplayCall(tool.toolName, tool.toolInput);
             childTools.push({
               toolId: tool.toolId,
-              toolName: tool.toolName,
-              toolInput: tool.toolInput,
+              toolName: normalizedChildTool.toolName,
+              toolInput: normalizedChildTool.toolInput,
               toolResult: tool.toolResult || null,
               timestamp: new Date(tool.timestamp || Date.now()),
             });
@@ -94,8 +97,11 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
           content: '',
           timestamp: msg.timestamp,
           isToolUse: true,
-          toolName: msg.toolName,
-          toolInput: typeof msg.toolInput === 'string' ? msg.toolInput : JSON.stringify(msg.toolInput ?? '', null, 2),
+          toolName: normalizedTool.toolName,
+          toolInput:
+            typeof normalizedTool.toolInput === 'string'
+              ? normalizedTool.toolInput
+              : JSON.stringify(normalizedTool.toolInput ?? '', null, 2),
           toolId: msg.toolId,
           toolResult,
           isSubagentContainer,

@@ -1,12 +1,14 @@
-import type { LoadingProgress, Project, ProjectSession, SessionProvider } from '../../../types/app';
+import type { LoadingProgress, Project, ProjectSession, RuntimeMode, SessionProvider } from '../../../types/app';
 
 export type ProjectSortOrder = 'name' | 'date';
+export type SidebarSessionProviderFilter = 'all' | Exclude<SessionProvider, 'e2b'>;
 
 export type SessionWithProvider = ProjectSession & {
   __provider: SessionProvider;
+  __runtime?: RuntimeMode;
 };
 
-export type AdditionalSessionsByProject = Record<string, ProjectSession[]>;
+export type AdditionalSessionsByProject = Record<string, Partial<Record<Exclude<SessionProvider, 'e2b'>, ProjectSession[]>>>;
 export type LoadingSessionsByProject = Record<string, boolean>;
 
 export type DeleteProjectConfirmation = {
@@ -19,6 +21,7 @@ export type SessionDeleteConfirmation = {
   sessionId: string;
   sessionTitle: string;
   provider: SessionProvider;
+  runtime?: RuntimeMode;
 };
 
 export type SidebarProps = {

@@ -21,8 +21,7 @@ export default function App() {
                 <ProtectedRoute>
                   <Router basename={window.__ROUTER_BASENAME__ || ''}>
                     <Routes>
-                      <Route path="/" element={<AppContent />} />
-                      <Route path="/session/:sessionId" element={<AppContent />} />
+                      <Route path="/*" element={<AppContent />} />
                     </Routes>
                   </Router>
                 </ProtectedRoute>

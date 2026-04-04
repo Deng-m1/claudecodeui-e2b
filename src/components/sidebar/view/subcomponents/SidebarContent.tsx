@@ -5,6 +5,7 @@ import { ScrollArea } from '../../../../shared/view/ui';
 import type { Project } from '../../../../types/app';
 import type { ReleaseInfo } from '../../../../types/sharedTypes';
 import type { ConversationSearchResults, SearchProgress } from '../../hooks/useSidebarController';
+import type { SidebarSessionProviderFilter } from '../../types/types';
 import SidebarFooter from './SidebarFooter';
 import SidebarHeader from './SidebarHeader';
 import SidebarProjectList, { type SidebarProjectListProps } from './SidebarProjectList';
@@ -45,6 +46,8 @@ type SidebarContentProps = {
   onClearSearchFilter: () => void;
   searchMode: SearchMode;
   onSearchModeChange: (mode: SearchMode) => void;
+  sessionProviderFilter: SidebarSessionProviderFilter;
+  onSessionProviderFilterChange: (filter: SidebarSessionProviderFilter) => void;
   conversationResults: ConversationSearchResults | null;
   isSearching: boolean;
   searchProgress: SearchProgress | null;
@@ -72,6 +75,8 @@ export default function SidebarContent({
   onClearSearchFilter,
   searchMode,
   onSearchModeChange,
+  sessionProviderFilter,
+  onSessionProviderFilterChange,
   conversationResults,
   isSearching,
   searchProgress,
@@ -93,6 +98,7 @@ export default function SidebarContent({
 
   return (
     <div
+      data-testid="sidebar-root"
       className="flex h-full flex-col bg-background/80 backdrop-blur-sm md:w-72 md:select-none"
       style={{}}
     >
@@ -106,6 +112,8 @@ export default function SidebarContent({
         onClearSearchFilter={onClearSearchFilter}
         searchMode={searchMode}
         onSearchModeChange={onSearchModeChange}
+        sessionProviderFilter={sessionProviderFilter}
+        onSessionProviderFilterChange={onSessionProviderFilterChange}
         onRefresh={onRefresh}
         isRefreshing={isRefreshing}
         onCreateProject={onCreateProject}

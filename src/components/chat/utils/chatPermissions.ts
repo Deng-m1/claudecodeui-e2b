@@ -1,17 +1,22 @@
 import { safeJsonParse } from '../../../lib/utils.js';
 import type { ChatMessage, ClaudePermissionSuggestion, PermissionGrantResult } from '../types/types.js';
 import { CLAUDE_SETTINGS_KEY, getClaudeSettings, safeLocalStorage } from './chatStorage';
+import { normalizeToolDisplayCall } from './toolNormalization';
 
 export function buildClaudeToolPermissionEntry(toolName?: string, toolInput?: unknown) {
-  if (!toolName) return null;
-  if (toolName !== 'Bash') return toolName;
+  const normalizedTool = normalizeToolDisplayCall(toolName, toolInput);
+  if (!normalizedTool.toolName) return null;
+  if (normalizedTool.toolName !== 'Bash') return normalizedTool.toolName;
 
-  const parsed = safeJsonParse(toolInput);
+  const parsed =
+    typeof normalizedTool.toolInput === 'string'
+      ? safeJsonParse(normalizedTool.toolInput)
+      : normalizedTool.toolInput;
   const command = typeof parsed?.command === 'string' ? parsed.command.trim() : '';
-  if (!command) return toolName;
+  if (!command) return normalizedTool.toolName;
 
   const tokens = command.split(/\s+/);
-  if (tokens.length === 0) return toolName;
+  if (tokens.length === 0) return normalizedTool.toolName;
 
   if (tokens[0] === 'git' && tokens[1]) {
     return `Bash(${tokens[0]} ${tokens[1]}:*)`;
@@ -36,13 +41,13 @@ export function getClaudePermissionSuggestion(
   if (provider !== 'claude') return null;
   if (!message?.toolResult?.isError) return null;
 
-  const toolName = message?.toolName;
-  const entry = buildClaudeToolPermissionEntry(toolName, message.toolInput);
+  const normalizedTool = normalizeToolDisplayCall(message?.toolName, message?.toolInput);
+  const entry = buildClaudeToolPermissionEntry(normalizedTool.toolName, normalizedTool.toolInput);
   if (!entry) return null;
 
   const settings = getClaudeSettings();
   const isAllowed = settings.allowedTools.includes(entry);
-  return { toolName: toolName || 'UnknownTool', entry, isAllowed };
+  return { toolName: normalizedTool.toolName || 'UnknownTool', entry, isAllowed };
 }
 
 export function grantClaudeToolPermission(entry: string | null): PermissionGrantResult {

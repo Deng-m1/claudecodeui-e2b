@@ -2,6 +2,7 @@ import React, { memo, useMemo, useCallback } from 'react';
 import type { Project } from '../../../types/app';
 import type { SubagentChildTool } from '../types/types';
 import { getToolConfig } from './configs/toolConfigs';
+import { buildToolDisplayResetKey, resolveCollapsibleDefaultOpen } from './toolDisplayState';
 import { OneLineDisplay, CollapsibleDisplay, ToolDiffViewer, MarkdownContent, FileListContent, TodoListContent, TaskListContent, TextContent, QuestionAnswerContent, SubagentContainer } from './components';
 
 type DiffLine = {
@@ -124,9 +125,16 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
       ? displayConfig.title(parsedData)
       : displayConfig.title || 'Details';
 
-    const defaultOpen = displayConfig.defaultOpen !== undefined
-      ? displayConfig.defaultOpen
-      : autoExpandTools;
+    const defaultOpen = resolveCollapsibleDefaultOpen(autoExpandTools);
+    const shouldShowRawParameters = mode === 'input' && showRawParameters;
+    const resetKey = buildToolDisplayResetKey({
+      toolName,
+      toolId,
+      mode,
+      defaultOpen,
+      showRawParameters: shouldShowRawParameters,
+      rawContent: rawToolInput,
+    });
 
     const contentProps = displayConfig.getContentProps?.(parsedData, {
       selectedProject,
@@ -225,8 +233,9 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
         toolId={toolId}
         title={title}
         defaultOpen={defaultOpen}
+        resetKey={resetKey}
         onTitleClick={handleTitleClick}
-        showRawParameters={mode === 'input' && showRawParameters}
+        showRawParameters={shouldShowRawParameters}
         rawContent={rawToolInput}
         toolCategory={getToolCategory(toolName)}
       >

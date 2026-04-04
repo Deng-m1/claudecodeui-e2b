@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import Onboarding from '../../onboarding/view/Onboarding';
 import AuthLoadingScreen from './AuthLoadingScreen';
 import LoginForm from './LoginForm';
+import RegistrationLockedScreen from './RegistrationLockedScreen';
 import SetupForm from './SetupForm';
 
 type ProtectedRouteProps = {
@@ -11,7 +12,7 @@ type ProtectedRouteProps = {
 };
 
 export default function ProtectedRoute({ children }: ProtectedRouteProps) {
-  const { user, isLoading, needsSetup, hasCompletedOnboarding, refreshOnboardingStatus } = useAuth();
+  const { user, isLoading, needsSetup, setupLocked, hasCompletedOnboarding, refreshOnboardingStatus } = useAuth();
 
   if (isLoading) {
     return <AuthLoadingScreen />;
@@ -23,6 +24,10 @@ export default function ProtectedRoute({ children }: ProtectedRouteProps) {
     }
 
     return <>{children}</>;
+  }
+
+  if (setupLocked) {
+    return <RegistrationLockedScreen />;
   }
 
   if (needsSetup) {

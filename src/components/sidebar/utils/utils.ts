@@ -1,12 +1,17 @@
 import type { TFunction } from 'i18next';
-import type { Project } from '../../../types/app';
+import type { Project, SessionProvider } from '../../../types/app';
+import { isCloudProject as isResolvedCloudProject } from '../../../utils/sessionSelection';
+import { parseDateString } from '../../../utils/dateUtils';
 import type {
   AdditionalSessionsByProject,
   ProjectSortOrder,
   SettingsProject,
+  SidebarSessionProviderFilter,
   SessionViewModel,
   SessionWithProvider,
 } from '../types/types';
+
+const SIDEBAR_SESSION_PROVIDERS: Array<Exclude<SessionProvider, 'e2b'>> = ['claude', 'cursor', 'codex', 'gemini'];
 
 export const readProjectSortOrder = (): ProjectSortOrder => {
   try {
@@ -39,16 +44,39 @@ export const persistStarredProjects = (starredProjects: Set<string>) => {
   }
 };
 
+export const isCloudProject = (project: Project): boolean =>
+  isResolvedCloudProject(project);
+
 export const getSessionDate = (session: SessionWithProvider): Date => {
   if (session.__provider === 'cursor') {
-    return new Date(session.createdAt || 0);
+    return parseDateString(session.createdAt || '');
   }
 
   if (session.__provider === 'codex') {
-    return new Date(session.createdAt || session.lastActivity || 0);
+    return parseDateString(session.createdAt || session.lastActivity || '');
   }
 
-  return new Date(session.lastActivity || session.createdAt || 0);
+  return parseDateString(session.lastActivity || session.createdAt || '');
+};
+
+const resolveE2BSessionProvider = (session: Record<string, unknown>): SessionProvider => {
+  const rawProvider = typeof session.provider === 'string' ? session.provider.toLowerCase() : '';
+  const rawAgent = typeof session.agent === 'string' ? session.agent.toLowerCase() : '';
+  const candidate = rawProvider || rawAgent;
+
+  if (candidate.includes('cursor')) {
+    return 'cursor';
+  }
+
+  if (candidate.includes('codex') || candidate.includes('openai')) {
+    return 'codex';
+  }
+
+  if (candidate.includes('gemini')) {
+    return 'gemini';
+  }
+
+  return 'claude';
 };
 
 export const getSessionName = (session: SessionWithProvider, t: TFunction): string => {
@@ -102,29 +130,105 @@ export const getAllSessions = (
   project: Project,
   additionalSessions: AdditionalSessionsByProject,
 ): SessionWithProvider[] => {
-  const claudeSessions = [
-    ...(project.sessions || []),
-    ...(additionalSessions[project.name] || []),
-  ].map((session) => ({ ...session, __provider: 'claude' as const }));
+  // Map-based dedup: first entry for each ID wins.
+  // Priority: local provider lists first, e2b last.
+  // This ensures a session that exists in both project.sessions (local) AND
+  // project.e2bSessions is treated as local — only sessions exclusively in
+  // e2bSessions get the e2b tag. Prevents both duplicate-key warnings and
+  // the "local session shows e2b label" bug.
+  const deduped = new Map<string, SessionWithProvider>();
 
-  const cursorSessions = (project.cursorSessions || []).map((session) => ({
-    ...session,
-    __provider: 'cursor' as const,
-  }));
+  const tryAdd = (session: SessionWithProvider) => {
+    if (!deduped.has(session.id)) {
+      deduped.set(session.id, session);
+    }
+  };
 
-  const codexSessions = (project.codexSessions || []).map((session) => ({
-    ...session,
-    __provider: 'codex' as const,
-  }));
+  const projectAdditionalSessions = additionalSessions[project.name] || {};
+  const localAdditionalSessions = isCloudProject(project)
+    ? {}
+    : projectAdditionalSessions;
 
-  const geminiSessions = (project.geminiSessions || []).map((session) => ({
-    ...session,
-    __provider: 'gemini' as const,
-  }));
+  for (const session of [...(project.sessions || []), ...(localAdditionalSessions.claude || [])]) {
+    tryAdd({ ...session, __provider: 'claude' as const, __runtime: 'local' as const });
+  }
+  for (const session of [...(project.cursorSessions || []), ...(localAdditionalSessions.cursor || [])]) {
+    tryAdd({ ...session, __provider: 'cursor' as const, __runtime: 'local' as const });
+  }
+  for (const session of [...(project.codexSessions || []), ...(localAdditionalSessions.codex || [])]) {
+    tryAdd({ ...session, __provider: 'codex' as const, __runtime: 'local' as const });
+  }
+  for (const session of [...(project.geminiSessions || []), ...(localAdditionalSessions.gemini || [])]) {
+    tryAdd({ ...session, __provider: 'gemini' as const, __runtime: 'local' as const });
+  }
+  for (const session of (project.e2bSessions || [])) {
+    tryAdd({
+      ...session,
+      __provider: resolveE2BSessionProvider(session as Record<string, unknown>),
+      __runtime: 'e2b' as const,
+    });
+  }
 
-  return [...claudeSessions, ...cursorSessions, ...codexSessions, ...geminiSessions].sort(
+  if (isCloudProject(project)) {
+    for (const provider of SIDEBAR_SESSION_PROVIDERS) {
+      for (const session of projectAdditionalSessions[provider] || []) {
+        tryAdd({
+          ...session,
+          __provider: provider,
+          __runtime: 'e2b' as const,
+        });
+      }
+    }
+  }
+
+  return [...deduped.values()].sort(
     (a, b) => getSessionDate(b).getTime() - getSessionDate(a).getTime(),
   );
+};
+
+export const filterSessionsByProvider = (
+  sessions: SessionWithProvider[],
+  providerFilter: SidebarSessionProviderFilter,
+): SessionWithProvider[] => {
+  if (providerFilter === 'all') {
+    return sessions;
+  }
+
+  return sessions.filter((session) => session.__provider === providerFilter);
+};
+
+export const getProjectSessionMetaForProvider = (
+  project: Project,
+  providerFilter: SidebarSessionProviderFilter,
+): { total: number; hasMore: boolean } => {
+  const providerMeta = project.sessionMeta?.byProvider || {};
+
+  if (providerFilter === 'all') {
+    return {
+      total: Number(project.sessionMeta?.total || 0),
+      hasMore: Boolean(project.sessionMeta?.hasMore),
+    };
+  }
+
+  const meta = providerMeta[providerFilter];
+  return {
+    total: Number(meta?.total || 0),
+    hasMore: Boolean(meta?.hasMore),
+  };
+};
+
+export const resolveProjectLoadMoreProvider = (
+  project: Project,
+  providerFilter: SidebarSessionProviderFilter,
+): Exclude<SessionProvider, 'e2b'> | null => {
+  if (providerFilter !== 'all') {
+    return getProjectSessionMetaForProvider(project, providerFilter).hasMore
+      ? providerFilter
+      : null;
+  }
+
+  const providerMeta = project.sessionMeta?.byProvider || {};
+  return SIDEBAR_SESSION_PROVIDERS.find((provider) => providerMeta[provider]?.hasMore) || null;
 };
 
 export const getProjectLastActivity = (
@@ -132,14 +236,19 @@ export const getProjectLastActivity = (
   additionalSessions: AdditionalSessionsByProject,
 ): Date => {
   const sessions = getAllSessions(project, additionalSessions);
+  const cloudFallbackDate = isCloudProject(project)
+    ? parseDateString(project.cloud?.lastActivity || project.cloud?.createdAt || '')
+    : new Date(0);
+  const initialDate = Number.isNaN(cloudFallbackDate.getTime()) ? new Date(0) : cloudFallbackDate;
+
   if (sessions.length === 0) {
-    return new Date(0);
+    return initialDate;
   }
 
   return sessions.reduce((latest, session) => {
     const sessionDate = getSessionDate(session);
     return sessionDate > latest ? sessionDate : latest;
-  }, new Date(0));
+  }, initialDate);
 };
 
 export const sortProjects = (
@@ -162,11 +271,26 @@ export const sortProjects = (
       return 1;
     }
 
+    const bothCloudProjects = isCloudProject(projectA) && isCloudProject(projectB);
+    if (bothCloudProjects) {
+      const activityDelta =
+        getProjectLastActivity(projectB, additionalSessions).getTime() -
+        getProjectLastActivity(projectA, additionalSessions).getTime();
+
+      if (activityDelta !== 0) {
+        return activityDelta;
+      }
+    }
+
     if (projectSortOrder === 'date') {
-      return (
+      const activityDelta = (
         getProjectLastActivity(projectB, additionalSessions).getTime() -
         getProjectLastActivity(projectA, additionalSessions).getTime()
       );
+
+      if (activityDelta !== 0) {
+        return activityDelta;
+      }
     }
 
     return (projectA.displayName || projectA.name).localeCompare(projectB.displayName || projectB.name);
@@ -182,9 +306,18 @@ export const filterProjects = (projects: Project[], searchFilter: string): Proje
   }
 
   return projects.filter((project) => {
-    const displayName = (project.displayName || project.name).toLowerCase();
-    const projectName = project.name.toLowerCase();
-    return displayName.includes(normalizedSearch) || projectName.includes(normalizedSearch);
+    const searchableFields = [
+      project.displayName || '',
+      project.name || '',
+      project.fullPath || '',
+      project.path || '',
+      project.cloud?.repoUrl || '',
+      project.cloud?.branch || '',
+      project.cloud?.sandboxId || '',
+      project.cloud?.workspacePath || '',
+    ];
+
+    return searchableFields.some((value) => value.toLowerCase().includes(normalizedSearch));
   });
 };
 

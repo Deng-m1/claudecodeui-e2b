@@ -1,8 +1,9 @@
 import { ChevronDown, Plus } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { Button } from '../../../../shared/view/ui';
-import type { Project, ProjectSession, SessionProvider } from '../../../../types/app';
-import type { SessionWithProvider } from '../../types/types';
+import type { Project, ProjectSession, RuntimeMode, SessionProvider } from '../../../../types/app';
+import type { SidebarSessionProviderFilter, SessionWithProvider } from '../../types/types';
+import { resolveProjectLoadMoreProvider } from '../../utils/utils';
 import SidebarSessionItem from './SidebarSessionItem';
 
 type SidebarProjectSessionsProps = {
@@ -13,12 +14,19 @@ type SidebarProjectSessionsProps = {
   initialSessionsLoaded: boolean;
   isLoadingSessions: boolean;
   currentTime: Date;
+  sessionProviderFilter: SidebarSessionProviderFilter;
   editingSession: string | null;
   editingSessionName: string;
   onEditingSessionNameChange: (value: string) => void;
   onStartEditingSession: (sessionId: string, initialName: string) => void;
   onCancelEditingSession: () => void;
-  onSaveEditingSession: (projectName: string, sessionId: string, summary: string, provider: SessionProvider) => void;
+  onSaveEditingSession: (
+    projectName: string,
+    sessionId: string,
+    summary: string,
+    provider: SessionProvider,
+    runtime: RuntimeMode,
+  ) => void;
   onProjectSelect: (project: Project) => void;
   onSessionSelect: (session: SessionWithProvider, projectName: string) => void;
   onDeleteSession: (
@@ -26,6 +34,7 @@ type SidebarProjectSessionsProps = {
     sessionId: string,
     sessionTitle: string,
     provider: SessionProvider,
+    runtime?: RuntimeMode,
   ) => void;
   onLoadMoreSessions: (project: Project) => void;
   onNewSession: (project: Project) => void;
@@ -58,6 +67,7 @@ export default function SidebarProjectSessions({
   initialSessionsLoaded,
   isLoadingSessions,
   currentTime,
+  sessionProviderFilter,
   editingSession,
   editingSessionName,
   onEditingSessionNameChange,
@@ -76,7 +86,7 @@ export default function SidebarProjectSessions({
   }
 
   const hasSessions = sessions.length > 0;
-  const hasMoreSessions = project.sessionMeta?.hasMore === true;
+  const hasMoreSessions = resolveProjectLoadMoreProvider(project, sessionProviderFilter) !== null;
 
   return (
     <div className="ml-3 space-y-1 border-l border-border pl-3">
@@ -108,10 +118,12 @@ export default function SidebarProjectSessions({
         ))
       )}
 
-      {hasSessions && hasMoreSessions && (
+      {hasMoreSessions && (
         <Button
           variant="ghost"
           size="sm"
+          data-testid="sidebar-load-more-sessions"
+          data-project-name={project.name}
           className="mt-2 w-full justify-center gap-2 text-muted-foreground"
           onClick={() => onLoadMoreSessions(project)}
           disabled={isLoadingSessions}
@@ -132,6 +144,8 @@ export default function SidebarProjectSessions({
 
       <div className="px-3 pb-2 md:hidden">
         <button
+          data-testid="project-new-session"
+          data-project-name={project.name}
           className="flex h-8 w-full items-center justify-center gap-2 rounded-md bg-primary text-xs font-medium text-primary-foreground transition-all duration-150 hover:bg-primary/90 active:scale-[0.98]"
           onClick={() => {
             onProjectSelect(project);
@@ -146,6 +160,8 @@ export default function SidebarProjectSessions({
       <Button
         variant="default"
         size="sm"
+        data-testid="project-new-session"
+        data-project-name={project.name}
         className="mt-1 hidden h-8 w-full justify-start gap-2 bg-primary text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 md:flex"
         onClick={() => onNewSession(project)}
       >

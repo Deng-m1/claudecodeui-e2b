@@ -48,6 +48,11 @@ pids
 # Coverage directory used by tools like istanbul
 coverage/
 *.lcov
+playwright-report/
+test-results/
+playwright/.auth/
+/.tmp-playwright*.config.ts
+/tmp-race-debug.png
 
 # nyc test coverage
 .nyc_output
@@ -114,6 +119,8 @@ CLAUDE.md
 *.db
 *.sqlite
 *.sqlite3 
+*.sqlite-shm
+*.sqlite-wal
 
 logs
 dev-debug.log
@@ -139,3 +146,8 @@ tasks/
 
 # Git worktrees
 .worktrees/
+
+# Local generated artifacts
+__pycache__/
+/.codex
+/status

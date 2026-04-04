@@ -11,6 +11,7 @@ import type {
 } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { authenticatedFetch } from '../../../utils/api';
+import { normalizeCodexFeatureToggles } from '../../settings/constants/constants';
 import { thinkingModes } from '../constants/thinkingModes';
 import { grantClaudeToolPermission } from '../utils/chatPermissions';
 import { safeLocalStorage } from '../utils/chatStorage';
@@ -23,11 +24,11 @@ import type { Project, ProjectSession, RuntimeMode, SessionProvider } from '../.
 import { escapeRegExp } from '../utils/chatFormatting';
 import { useFileMentions } from './useFileMentions';
 import { type SlashCommand, useSlashCommands } from './useSlashCommands';
-
-type PendingViewSession = {
-  sessionId: string | null;
-  startedAt: number;
-};
+import {
+  getPendingViewSessionId,
+  getPersistedPendingSessionId,
+  type PendingViewSession,
+} from '../utils/pendingSession';
 
 interface UseChatComposerStateArgs {
   selectedProject: Project | null;
@@ -135,6 +136,9 @@ export function useChatComposerState({
   setIsUserScrolledUp,
   setPendingPermissionRequests,
 }: UseChatComposerStateArgs) {
+  // runtimeMode is already the effectiveRuntimeMode (computed in ChatInterface
+  // via normalizeSessionSelection metadata). No re-derivation needed.
+  const effectiveRuntimeMode = runtimeMode;
   const [input, setInput] = useState(() => {
     if (typeof window !== 'undefined' && selectedProject) {
       return safeLocalStorage.getItem(`draft_input_${selectedProject.name}`) || '';
@@ -281,7 +285,7 @@ export function useChatComposerState({
         const context = {
           projectPath: selectedProject.fullPath || selectedProject.path,
           projectName: selectedProject.name,
-          sessionId: currentSessionId,
+          sessionId: selectedSession?.id || getPendingViewSessionId(currentSessionId, pendingViewSessionRef.current),
           provider,
           model: provider === 'cursor' ? cursorModel : provider === 'codex' ? codexModel : provider === 'gemini' ? geminiModel : claudeModel,
           tokenUsage: tokenBudget,
@@ -360,6 +364,7 @@ export function useChatComposerState({
     handleCommandMenuKeyDown,
   } = useSlashCommands({
     selectedProject,
+    selectedSession,
     input,
     setInput,
     textareaRef,
@@ -376,6 +381,7 @@ export function useChatComposerState({
     handleFileMentionsKeyDown,
   } = useFileMentions({
     selectedProject,
+    selectedSession,
     input,
     setInput,
     textareaRef,
@@ -530,7 +536,7 @@ export function useChatComposerState({
       }
 
       const effectiveSessionId =
-        currentSessionId || selectedSession?.id || sessionStorage.getItem('cursorSessionId');
+        selectedSession?.id || getPendingViewSessionId(currentSessionId, pendingViewSessionRef.current);
       const sessionToActivate = effectiveSessionId || `new-session-${Date.now()}`;
 
       const userMessage: ChatMessage = {
@@ -576,10 +582,27 @@ export function useChatComposerState({
                   : 'claude-settings';
           const savedSettings = safeLocalStorage.getItem(settingsKey);
           if (savedSettings) {
-            return JSON.parse(savedSettings);
+            const parsed = JSON.parse(savedSettings) as Record<string, unknown>;
+
+            if (provider === 'codex') {
+              return {
+                ...parsed,
+                featureToggles: normalizeCodexFeatureToggles(
+                  parsed.featureToggles as Record<string, boolean> | undefined,
+                ),
+              };
+            }
+
+            return parsed;
           }
         } catch (error) {
           console.error('Error loading tools settings:', error);
+        }
+
+        if (provider === 'codex') {
+          return {
+            featureToggles: normalizeCodexFeatureToggles(undefined),
+          };
         }
 
         return {
@@ -590,7 +613,21 @@ export function useChatComposerState({
       };
 
       const toolsSettings = getToolsSettings();
-      const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
+      const codexFeatureToggles = provider === 'codex'
+        ? normalizeCodexFeatureToggles(
+            (toolsSettings as { featureToggles?: Record<string, boolean> }).featureToggles,
+          )
+        : null;
+      const resolvedProjectPath =
+        selectedSession?.__projectPath ||
+        selectedProject.cloud?.workspacePath ||
+        selectedProject.fullPath ||
+        selectedProject.path ||
+        '';
+      const sandboxId =
+        typeof selectedProject.cloud?.sandboxId === 'string' && selectedProject.cloud.sandboxId
+          ? selectedProject.cloud.sandboxId
+          : null;
       const sessionSummary = getNotificationSessionSummary(selectedSession, currentInput);
 
       const currentModel =
@@ -598,7 +635,7 @@ export function useChatComposerState({
         provider === 'codex' ? codexModel :
         provider === 'gemini' ? geminiModel : claudeModel;
 
-      if (runtimeMode === 'e2b') {
+      if (effectiveRuntimeMode === 'e2b') {
         sendMessage({
           type: 'e2b-command',
           command: messageContent,
@@ -610,8 +647,10 @@ export function useChatComposerState({
             sessionId: effectiveSessionId,
             resume: Boolean(effectiveSessionId),
             model: currentModel,
+            sandboxId,
             sessionSummary,
             permissionMode,
+            featureToggles: codexFeatureToggles,
           },
         });
       } else if (provider === 'cursor') {
@@ -643,6 +682,7 @@ export function useChatComposerState({
             model: codexModel,
             sessionSummary,
             permissionMode: permissionMode === 'plan' ? 'default' : permissionMode,
+            featureToggles: codexFeatureToggles,
           },
         });
       } else if (provider === 'gemini') {
@@ -708,6 +748,7 @@ export function useChatComposerState({
       onSessionProcessing,
       pendingViewSessionRef,
       permissionMode,
+      effectiveRuntimeMode,
       provider,
       resetCommandMenuState,
       scrollToBottom,
@@ -873,17 +914,11 @@ export function useChatComposerState({
       return;
     }
 
-    const pendingSessionId =
-      typeof window !== 'undefined' ? sessionStorage.getItem('pendingSessionId') : null;
-    const cursorSessionId =
-      typeof window !== 'undefined' ? sessionStorage.getItem('cursorSessionId') : null;
-
+    const pendingSessionId = getPersistedPendingSessionId();
     const candidateSessionIds = [
-      currentSessionId,
-      pendingViewSessionRef.current?.sessionId || null,
-      pendingSessionId,
-      provider === 'cursor' ? cursorSessionId : null,
       selectedSession?.id || null,
+      getPendingViewSessionId(currentSessionId, pendingViewSessionRef.current),
+      pendingSessionId,
     ];
 
     const targetSessionId =
@@ -897,9 +932,9 @@ export function useChatComposerState({
     sendMessage({
       type: 'abort-session',
       sessionId: targetSessionId,
-      provider: runtimeMode === 'e2b' ? 'e2b' : provider,
+      provider: effectiveRuntimeMode === 'e2b' ? 'e2b' : provider,
     });
-  }, [canAbortSession, currentSessionId, pendingViewSessionRef, provider, runtimeMode, selectedSession?.id, sendMessage]);
+  }, [canAbortSession, currentSessionId, effectiveRuntimeMode, pendingViewSessionRef, provider, selectedSession?.id, sendMessage]);
 
   const handleTranscript = useCallback((text: string) => {
     if (!text.trim()) {
@@ -938,7 +973,13 @@ export function useChatComposerState({
   const handlePermissionDecision = useCallback(
     (
       requestIds: string | string[],
-      decision: { allow?: boolean; message?: string; rememberEntry?: string | null; updatedInput?: unknown },
+      decision: {
+        allow?: boolean;
+        message?: string;
+        rememberEntry?: string | null;
+        reply?: 'once' | 'always' | 'reject';
+        updatedInput?: unknown;
+      },
     ) => {
       const ids = Array.isArray(requestIds) ? requestIds : [requestIds];
       const validIds = ids.filter(Boolean);
@@ -947,12 +988,22 @@ export function useChatComposerState({
       }
 
       validIds.forEach((requestId) => {
-        if (runtimeMode === 'e2b') {
+        if (effectiveRuntimeMode === 'e2b') {
+          const reply = decision?.reply || (
+            decision?.allow
+              ? (decision?.rememberEntry ? 'always' : 'once')
+              : 'reject'
+          );
           sendMessage({
             type: 'e2b-permission-response',
+            permissionId: requestId,
             requestId,
             allow: Boolean(decision?.allow),
-            sessionId: currentSessionId,
+            reply,
+            rememberEntry: decision?.rememberEntry,
+            sessionId:
+              selectedSession?.id ||
+              getPendingViewSessionId(currentSessionId, pendingViewSessionRef.current),
           });
         } else {
           sendMessage({
@@ -974,7 +1025,7 @@ export function useChatComposerState({
         return next;
       });
     },
-    [sendMessage, setClaudeStatus, setPendingPermissionRequests],
+    [currentSessionId, effectiveRuntimeMode, sendMessage, setClaudeStatus, setPendingPermissionRequests],
   );
 
   const [isInputFocused, setIsInputFocused] = useState(false);

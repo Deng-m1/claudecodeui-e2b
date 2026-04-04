@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import ReactDOM from 'react-dom';
 import { AlertTriangle, Trash2 } from 'lucide-react';
 import type { TFunction } from 'i18next';
@@ -11,6 +11,7 @@ import type { InstallMode } from '../../../../hooks/useVersionCheck';
 import { normalizeProjectForSettings } from '../../utils/utils';
 import type { DeleteProjectConfirmation, SessionDeleteConfirmation, SettingsProject } from '../../types/types';
 import ProjectCreationWizard from '../../../project-creation-wizard';
+import SessionLauncher from '../../../session-launcher/SessionLauncher';
 
 type SidebarModalsProps = {
   projects: Project[];
@@ -20,6 +21,7 @@ type SidebarModalsProps = {
   showNewProject: boolean;
   onCloseNewProject: () => void;
   onProjectCreated: () => void;
+  onOpenProject: (project: Project) => void;
   deleteConfirmation: DeleteProjectConfirmation | null;
   onCancelDeleteProject: () => void;
   onConfirmDeleteProject: () => void;
@@ -56,6 +58,7 @@ export default function SidebarModals({
   showNewProject,
   onCloseNewProject,
   onProjectCreated,
+  onOpenProject,
   deleteConfirmation,
   onCancelDeleteProject,
   onConfirmDeleteProject,
@@ -70,9 +73,10 @@ export default function SidebarModals({
   installMode,
   t,
 }: SidebarModalsProps) {
+  const [showProjectWizard, setShowProjectWizard] = useState(false);
   // Settings expects project identity/path fields to be present for dropdown labels and local-scope MCP config.
   const settingsProjects = useMemo(
-    () => projects.map(normalizeProjectForSettings),
+    () => projects.filter((project) => project.runtime !== 'e2b').map(normalizeProjectForSettings),
     [projects],
   );
 
@@ -80,9 +84,26 @@ export default function SidebarModals({
     <>
       {showNewProject &&
         ReactDOM.createPortal(
-          <ProjectCreationWizard
+          <SessionLauncher
+            projects={projects}
             onClose={onCloseNewProject}
-            onProjectCreated={onProjectCreated}
+            onOpenProject={onOpenProject}
+            onOpenNewProjectWizard={() => {
+              onCloseNewProject();
+              setShowProjectWizard(true);
+            }}
+          />,
+          document.body,
+        )}
+
+      {showProjectWizard &&
+        ReactDOM.createPortal(
+          <ProjectCreationWizard
+            onClose={() => setShowProjectWizard(false)}
+            onProjectCreated={() => {
+              setShowProjectWizard(false);
+              onProjectCreated();
+            }}
           />,
           document.body,
         )}

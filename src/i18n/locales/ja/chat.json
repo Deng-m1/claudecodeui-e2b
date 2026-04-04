@@ -9,7 +9,9 @@
     "copied": "メッセージをコピーしました",
     "selectFormat": "コピー形式を選択",
     "copyAsMarkdown": "Markdownとしてコピー",
-    "copyAsText": "テキストとしてコピー"
+    "copyAsText": "テキストとしてコピー",
+    "markdownShort": "MD",
+    "textShort": "TXT"
   },
   "messageTypes": {
     "user": "U",
@@ -199,12 +201,16 @@
       "restart": "再起動",
       "restartTitle": "シェルを再起動（先に切断してください）",
       "connect": "シェルで続行",
-      "connectTitle": "シェルに接続"
+      "connectTitle": "シェルに接続",
+      "attach": "端末に接続",
+      "attachTitle": "既存のセッション端末に接続"
     },
     "loading": "ターミナルを読み込んでいます...",
     "connecting": "シェルに接続しています...",
+    "attaching": "端末に接続しています...",
     "startSession": "新しいClaudeセッションを開始",
     "resumeSession": "セッションを再開: {{displayName}}...",
+    "attachSession": "端末に接続: {{displayName}}",
     "runCommand": "{{projectName}}で{{command}}を実行",
     "startCli": "{{projectName}}でClaude CLIを起動しています",
     "defaultCommand": "コマンド"

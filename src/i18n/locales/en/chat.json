@@ -9,7 +9,9 @@
     "copied": "Message copied",
     "selectFormat": "Select copy format",
     "copyAsMarkdown": "Copy as markdown",
-    "copyAsText": "Copy as text"
+    "copyAsText": "Copy as text",
+    "markdownShort": "MD",
+    "textShort": "TXT"
   },
   "messageTypes": {
     "user": "U",
@@ -249,12 +251,16 @@
       "restart": "Restart",
       "restartTitle": "Restart Shell (disconnect first)",
       "connect": "Continue in Shell",
-      "connectTitle": "Connect to shell"
+      "connectTitle": "Connect to shell",
+      "attach": "Attach Terminal",
+      "attachTitle": "Attach to the existing session terminal"
     },
     "loading": "Loading terminal...",
     "connecting": "Connecting to shell...",
+    "attaching": "Attaching to terminal...",
     "startSession": "Start a new Claude session",
     "resumeSession": "Resume session: {{displayName}}...",
+    "attachSession": "Attach to terminal: {{displayName}}",
     "runCommand": "Run {{command}} in {{projectName}}",
     "startCli": "Starting Claude CLI in {{projectName}}",
     "defaultCommand": "command"

@@ -2,27 +2,16 @@ import { useCallback, useEffect, useState } from 'react';
 import { GitBranch, Loader2, Lock, Search } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Input } from '../../shared/view/ui';
-import { authenticatedFetch } from '../../utils/api';
-
-type Repo = {
-  id: number;
-  name: string;
-  fullName: string;
-  private: boolean;
-  description: string | null;
-  defaultBranch: string;
-  language: string | null;
-  updatedAt: string;
-  htmlUrl: string;
-  cloneUrl: string;
-  owner: { login: string; avatarUrl: string };
-};
-
-type Branch = {
-  name: string;
-  isDefault: boolean;
-  sha: string;
-};
+import {
+  type GitHubBranch as Branch,
+  type GitHubRepo as Repo,
+  fetchGitHubBranches,
+  fetchGitHubRepos,
+  mergeGitHubRepos,
+  matchesGitHubRepoQuery,
+  matchesGitHubRepoSelection,
+  resolveGitHubBranchSelection,
+} from '../../utils/github';
 
 type Selection = {
   repo: Repo;
@@ -38,6 +27,7 @@ type GitHubRepoBrowserProps = {
 export default function GitHubRepoBrowser({ onSelect, selectedRepo, selectedBranch }: GitHubRepoBrowserProps) {
   const { t } = useTranslation('settings');
   const [repos, setRepos] = useState<Repo[]>([]);
+  const [repoCatalog, setRepoCatalog] = useState<Repo[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [loading, setLoading] = useState(false);
   const [branchLoading, setBranchLoading] = useState(false);
@@ -50,35 +40,33 @@ export default function GitHubRepoBrowser({ onSelect, selectedRepo, selectedBran
     try {
       setLoading(true);
       setError(null);
-      const params = new URLSearchParams({ per_page: '30', sort: 'updated' });
-      if (query) params.set('q', query);
-      const res = await authenticatedFetch(`/api/github/repos?${params}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to load repos');
-      setRepos(data.repos || []);
+      const nextRepos = await fetchGitHubRepos(query);
+      setRepos(nextRepos);
+      setRepoCatalog((currentRepos) => mergeGitHubRepos(currentRepos, nextRepos));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load repos');
+      setRepos([]);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  const fetchBranches = useCallback(async (repo: Repo) => {
+  const fetchBranches = useCallback(async (repo: Repo, preferredBranch?: string) => {
     try {
       setBranchLoading(true);
-      const res = await authenticatedFetch(`/api/github/repos/${repo.owner.login}/${repo.name}/branches`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to load branches');
-      setBranches(data.branches || []);
-      const defaultBranch = data.defaultBranch || repo.defaultBranch || 'main';
-      setActiveBranch(selectedBranch || defaultBranch);
+      const { branches: nextBranches, defaultBranch } = await fetchGitHubBranches(repo);
+      setBranches(nextBranches);
+      setActiveBranch(resolveGitHubBranchSelection(preferredBranch || selectedBranch, nextBranches, defaultBranch));
     } catch (err) {
       console.error('Failed to load branches:', err);
       setBranches([]);
+      setActiveBranch(preferredBranch || repo.defaultBranch || 'main');
     } finally {
       setBranchLoading(false);
     }
   }, [selectedBranch]);
+
+  const visibleRepos = mergeGitHubRepos(repos, repoCatalog).filter((repo) => matchesGitHubRepoQuery(repo, search));
 
   useEffect(() => {
     fetchRepos('');
@@ -89,9 +77,49 @@ export default function GitHubRepoBrowser({ onSelect, selectedRepo, selectedBran
     return () => clearTimeout(timer);
   }, [search, fetchRepos]);
 
+  useEffect(() => {
+    if (!selectedRepo) {
+      return;
+    }
+
+    if (activeRepo && matchesGitHubRepoSelection(activeRepo, selectedRepo)) {
+      return;
+    }
+
+    const matchedRepo = visibleRepos.find((repo) => matchesGitHubRepoSelection(repo, selectedRepo));
+    if (matchedRepo) {
+      setActiveRepo(matchedRepo);
+      if (!search) {
+        setSearch(matchedRepo.fullName);
+      }
+      void fetchBranches(matchedRepo, selectedBranch);
+      return;
+    }
+
+    if (!loading && !search) {
+      setSearch(selectedRepo);
+    }
+  }, [activeRepo, fetchBranches, loading, search, selectedBranch, selectedRepo, visibleRepos]);
+
+  useEffect(() => {
+    if (!activeRepo || !selectedBranch) {
+      return;
+    }
+
+    setActiveBranch((currentBranch) => {
+      const nextBranch = resolveGitHubBranchSelection(
+        selectedBranch,
+        branches,
+        currentBranch || activeRepo.defaultBranch,
+      );
+      return currentBranch === nextBranch ? currentBranch : nextBranch;
+    });
+  }, [activeRepo, branches, selectedBranch]);
+
   const handleRepoSelect = (repo: Repo) => {
     setActiveRepo(repo);
-    fetchBranches(repo);
+    setError(null);
+    void fetchBranches(repo, activeRepo?.id === repo.id ? activeBranch : repo.defaultBranch);
   };
 
   const handleBranchChange = (branch: string) => {
@@ -129,19 +157,19 @@ export default function GitHubRepoBrowser({ onSelect, selectedRepo, selectedBran
             <Loader2 className="h-4 w-4 animate-spin" />
             {t('github.loadingRepos', { defaultValue: 'Loading repositories...' })}
           </div>
-        ) : repos.length === 0 ? (
+        ) : visibleRepos.length === 0 ? (
           <p className="p-4 text-center text-sm text-muted-foreground">
             {t('github.noRepos', { defaultValue: 'No repositories found' })}
           </p>
         ) : (
-          repos.map((repo) => (
+          visibleRepos.map((repo) => (
             <button
               key={repo.id}
               onClick={() => handleRepoSelect(repo)}
               className={`flex w-full items-center gap-3 border-b border-border/50 px-3 py-2 text-left transition-colors last:border-0 ${
                 activeRepo?.id === repo.id || selectedRepo === repo.fullName
                   ? 'bg-primary/10 text-foreground'
-                  : 'hover:bg-muted/50 text-foreground'
+                  : 'text-foreground hover:bg-muted/50'
               }`}
             >
               <img src={repo.owner.avatarUrl} alt="" className="h-5 w-5 rounded-full" />
@@ -177,6 +205,9 @@ export default function GitHubRepoBrowser({ onSelect, selectedRepo, selectedBran
               onChange={(e) => handleBranchChange(e.target.value)}
               className="rounded-md border border-border bg-background px-2 py-1 text-sm"
             >
+              {branches.length === 0 && activeBranch && (
+                <option value={activeBranch}>{activeBranch}</option>
+              )}
               {branches.map((b) => (
                 <option key={b.name} value={b.name}>
                   {b.name}{b.isDefault ? ' (default)' : ''}

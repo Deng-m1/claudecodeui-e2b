@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTheme } from '../../../contexts/ThemeContext';
-import { authenticatedFetch } from '../../../utils/api';
+import { authenticatedFetch, parseApiJson } from '../../../utils/api';
 import {
   AUTH_STATUS_ENDPOINTS,
   DEFAULT_AUTH_STATUS,
   DEFAULT_CODE_EDITOR_SETTINGS,
+  DEFAULT_CODEX_FEATURE_TOGGLES,
+  DEFAULT_CODEX_PERMISSION_MODE,
   DEFAULT_CURSOR_PERMISSIONS,
+  normalizeCodexFeatureToggles,
+  normalizeCodexPermissionMode,
 } from '../constants/constants';
 import type {
   AgentProvider,
@@ -13,6 +17,7 @@ import type {
   ClaudeMcpFormState,
   ClaudePermissionsState,
   CodeEditorSettingsState,
+  CodexFeatureToggles,
   CodexMcpFormState,
   CodexPermissionMode,
   CursorPermissionsState,
@@ -95,6 +100,7 @@ type CursorSettingsStorage = {
 
 type CodexSettingsStorage = {
   permissionMode?: CodexPermissionMode;
+  featureToggles?: Partial<CodexFeatureToggles>;
 };
 
 type NotificationPreferencesResponse = {
@@ -102,9 +108,15 @@ type NotificationPreferencesResponse = {
   preferences?: NotificationPreferencesState;
 };
 
+type ClaudePermissionsResponse = {
+  success?: boolean;
+  settings?: ClaudePermissionsState;
+  warnings?: string[];
+};
+
 type ActiveLoginProvider = AgentProvider | '';
 
-const KNOWN_MAIN_TABS: SettingsMainTab[] = ['agents', 'appearance', 'git', 'api', 'tasks', 'notifications', 'plugins'];
+const KNOWN_MAIN_TABS: SettingsMainTab[] = ['agents', 'appearance', 'git', 'api', 'authCenter', 'tasks', 'notifications', 'plugins', 'e2b'];
 
 const normalizeMainTab = (tab: string): SettingsMainTab => {
   // Keep backwards compatibility with older callers that still pass "tools".
@@ -129,14 +141,6 @@ const parseJson = <T>(value: string | null, fallback: T): T => {
   } catch {
     return fallback;
   }
-};
-
-const toCodexPermissionMode = (value: unknown): CodexPermissionMode => {
-  if (value === 'acceptEdits' || value === 'bypassPermissions') {
-    return value;
-  }
-
-  return 'default';
 };
 
 const readCodeEditorSettings = (): CodeEditorSettingsState => ({
@@ -192,6 +196,12 @@ const createEmptyCursorPermissions = (): CursorPermissionsState => ({
   ...DEFAULT_CURSOR_PERMISSIONS,
 });
 
+const createDefaultCodexFeatureToggles = (): CodexFeatureToggles => ({
+  ...DEFAULT_CODEX_FEATURE_TOGGLES,
+});
+
+const createDefaultCodexPermissionMode = (): CodexPermissionMode => DEFAULT_CODEX_PERMISSION_MODE;
+
 const createDefaultNotificationPreferences = (): NotificationPreferencesState => ({
   channels: {
     inApp: true,
@@ -225,7 +235,12 @@ export function useSettingsController({ isOpen, initialTab, projects, onClose }:
   const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferencesState>(() => (
     createDefaultNotificationPreferences()
   ));
-  const [codexPermissionMode, setCodexPermissionMode] = useState<CodexPermissionMode>('default');
+  const [codexPermissionMode, setCodexPermissionMode] = useState<CodexPermissionMode>(() => (
+    createDefaultCodexPermissionMode()
+  ));
+  const [codexFeatureToggles, setCodexFeatureToggles] = useState<CodexFeatureToggles>(() => (
+    createDefaultCodexFeatureToggles()
+  ));
   const [geminiPermissionMode, setGeminiPermissionMode] = useState<GeminiPermissionMode>('default');
 
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
@@ -662,12 +677,32 @@ export function useSettingsController({ isOpen, initialTab, projects, onClose }:
         localStorage.getItem('claude-settings'),
         {},
       );
-      setClaudePermissions({
+      const fallbackClaudePermissions = {
         allowedTools: savedClaudeSettings.allowedTools || [],
         disallowedTools: savedClaudeSettings.disallowedTools || [],
         skipPermissions: Boolean(savedClaudeSettings.skipPermissions),
-      });
+      };
+      setClaudePermissions(fallbackClaudePermissions);
       setProjectSortOrder(savedClaudeSettings.projectSortOrder === 'date' ? 'date' : 'name');
+
+      try {
+        const claudePermissionsResponse = await authenticatedFetch('/api/settings/claude-permissions');
+        if (claudePermissionsResponse.ok) {
+          const claudePermissionsData = await parseApiJson(
+            claudePermissionsResponse,
+            'Failed to load Claude permission settings',
+          ) as ClaudePermissionsResponse | null;
+          if (claudePermissionsData?.success && claudePermissionsData.settings) {
+            setClaudePermissions(claudePermissionsData.settings);
+            localStorage.setItem('claude-settings', JSON.stringify({
+              ...savedClaudeSettings,
+              ...claudePermissionsData.settings,
+            }));
+          }
+        }
+      } catch (error) {
+        console.warn('Failed to load backend Claude permission settings:', error);
+      }
 
       const savedCursorSettings = parseJson<CursorSettingsStorage>(
         localStorage.getItem('cursor-tools-settings'),
@@ -683,7 +718,8 @@ export function useSettingsController({ isOpen, initialTab, projects, onClose }:
         localStorage.getItem('codex-settings'),
         {},
       );
-      setCodexPermissionMode(toCodexPermissionMode(savedCodexSettings.permissionMode));
+      setCodexPermissionMode(normalizeCodexPermissionMode(savedCodexSettings.permissionMode));
+      setCodexFeatureToggles(normalizeCodexFeatureToggles(savedCodexSettings.featureToggles));
 
       const savedGeminiSettings = parseJson<{ permissionMode?: GeminiPermissionMode }>(
         localStorage.getItem('gemini-settings'),
@@ -717,7 +753,8 @@ export function useSettingsController({ isOpen, initialTab, projects, onClose }:
       setClaudePermissions(createEmptyClaudePermissions());
       setCursorPermissions(createEmptyCursorPermissions());
       setNotificationPreferences(createDefaultNotificationPreferences());
-      setCodexPermissionMode('default');
+      setCodexPermissionMode(createDefaultCodexPermissionMode());
+      setCodexFeatureToggles(createDefaultCodexFeatureToggles());
       setProjectSortOrder('name');
     }
   }, [fetchCodexMcpServers, fetchCursorMcpServers, fetchMcpServers]);
@@ -741,11 +778,41 @@ export function useSettingsController({ isOpen, initialTab, projects, onClose }:
     setSaveStatus(null);
 
     try {
+      const claudePermissionsResponse = await authenticatedFetch('/api/settings/claude-permissions', {
+        method: 'PUT',
+        body: JSON.stringify({
+          allowedTools: claudePermissions.allowedTools,
+          disallowedTools: claudePermissions.disallowedTools,
+          skipPermissions: claudePermissions.skipPermissions,
+        }),
+      });
+      if (!claudePermissionsResponse.ok) {
+        throw new Error('Failed to save Claude permission settings');
+      }
+
+      const claudePermissionsData = await parseApiJson(
+        claudePermissionsResponse,
+        'Failed to save Claude permission settings',
+      ) as ClaudePermissionsResponse | null;
+      const persistedClaudePermissions = claudePermissionsData?.success && claudePermissionsData.settings
+        ? claudePermissionsData.settings
+        : {
+            allowedTools: claudePermissions.allowedTools,
+            disallowedTools: claudePermissions.disallowedTools,
+            skipPermissions: claudePermissions.skipPermissions,
+          };
+
+      if (Array.isArray(claudePermissionsData?.warnings) && claudePermissionsData.warnings.length > 0) {
+        console.warn('Claude permission settings saved with warnings:', claudePermissionsData.warnings);
+      }
+
+      setClaudePermissions(persistedClaudePermissions);
+
       const now = new Date().toISOString();
       localStorage.setItem('claude-settings', JSON.stringify({
-        allowedTools: claudePermissions.allowedTools,
-        disallowedTools: claudePermissions.disallowedTools,
-        skipPermissions: claudePermissions.skipPermissions,
+        allowedTools: persistedClaudePermissions.allowedTools,
+        disallowedTools: persistedClaudePermissions.disallowedTools,
+        skipPermissions: persistedClaudePermissions.skipPermissions,
         projectSortOrder,
         lastUpdated: now,
       }));
@@ -759,8 +826,17 @@ export function useSettingsController({ isOpen, initialTab, projects, onClose }:
 
       localStorage.setItem('codex-settings', JSON.stringify({
         permissionMode: codexPermissionMode,
+        featureToggles: codexFeatureToggles,
         lastUpdated: now,
       }));
+
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('claudecodeui:codex-settings-changed', {
+          detail: {
+            permissionMode: codexPermissionMode,
+          },
+        }));
+      }
 
       localStorage.setItem('gemini-settings', JSON.stringify({
         permissionMode: geminiPermissionMode,
@@ -784,6 +860,7 @@ export function useSettingsController({ isOpen, initialTab, projects, onClose }:
     claudePermissions.allowedTools,
     claudePermissions.disallowedTools,
     claudePermissions.skipPermissions,
+    codexFeatureToggles,
     codexPermissionMode,
     cursorPermissions.allowedCommands,
     cursorPermissions.disallowedCommands,
@@ -915,6 +992,8 @@ export function useSettingsController({ isOpen, initialTab, projects, onClose }:
     setNotificationPreferences,
     codexPermissionMode,
     setCodexPermissionMode,
+    codexFeatureToggles,
+    setCodexFeatureToggles,
     mcpServers,
     cursorMcpServers,
     codexMcpServers,

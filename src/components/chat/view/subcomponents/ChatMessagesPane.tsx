@@ -135,6 +135,7 @@ export default function ChatMessagesPane({
   return (
     <div
       ref={scrollContainerRef}
+      data-testid="chat-messages-pane"
       onWheel={onWheel}
       onTouchMove={onTouchMove}
       className="relative flex-1 space-y-3 overflow-y-auto overflow-x-hidden px-0 py-3 sm:space-y-4 sm:p-4"
@@ -148,6 +149,7 @@ export default function ChatMessagesPane({
         </div>
       ) : chatMessages.length === 0 ? (
         <ProviderSelectionEmptyState
+          selectedProject={selectedProject}
           selectedSession={selectedSession}
           currentSessionId={currentSessionId}
           provider={provider}
@@ -272,4 +274,3 @@ export default function ChatMessagesPane({
     </div>
   );
 }
-

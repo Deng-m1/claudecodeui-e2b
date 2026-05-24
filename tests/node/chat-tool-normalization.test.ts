@@ -57,3 +57,22 @@ test('buildClaudeToolPermissionEntry treats exec_command as Bash for command per
 
   assert.equal(entry, 'Bash(git status:*)');
 });
+
+test('normalizedToChatMessages stringifies structured error payloads for display', () => {
+  const messages: NormalizedMessage[] = [
+    {
+      id: 'error-1',
+      sessionId: 'session-1',
+      timestamp: '2026-04-07T07:00:00.000Z',
+      provider: 'claude',
+      kind: 'error',
+      content: { message: 'Country, region, or territory not supported' } as any,
+    },
+  ];
+
+  const chatMessages = normalizedToChatMessages(messages);
+
+  assert.equal(chatMessages.length, 1);
+  assert.equal(chatMessages[0]?.type, 'error');
+  assert.equal(chatMessages[0]?.content, 'Country, region, or territory not supported');
+});

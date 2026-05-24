@@ -88,6 +88,41 @@ async function connectSandboxClient(context, forceReconnect = false) {
   return client;
 }
 
+export async function getLiveE2BSessionInfo(context, sessionId) {
+  if (!context?.sandboxId || typeof sessionId !== 'string' || !sessionId.trim()) {
+    return null;
+  }
+
+  let client = await connectSandboxClient(context);
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const session = await client.getSession(sessionId);
+      if (!session || typeof session !== 'object') {
+        return null;
+      }
+
+      return {
+        sessionId:
+          typeof session.id === 'string' && session.id.trim()
+            ? session.id.trim()
+            : sessionId.trim(),
+        agentSessionId:
+          typeof session.agentSessionId === 'string' && session.agentSessionId.trim()
+            ? session.agentSessionId.trim()
+            : null,
+      };
+    } catch {
+      if (attempt === 0) {
+        client = await connectSandboxClient(context, true);
+        continue;
+      }
+    }
+  }
+
+  return null;
+}
+
 async function getRunningProcess(client, processId) {
   if (!processId) {
     return null;

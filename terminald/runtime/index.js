@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { e2bSessionDb } from '../../server/database/db.js';
 import { resolveE2BAgentProvider } from '../../server/providers/e2b/project-utils.js';
 import { resolveTerminalRuntimeContext } from './context.js';
-import { attachE2BTerminal, closeE2BTerminal, ensureE2BTerminal } from './e2b.js';
+import { attachE2BTerminal, closeE2BTerminal, ensureE2BTerminal, getLiveE2BSessionInfo } from './e2b.js';
 import { attachLocalTerminal, closeLocalTerminal, ensureLocalTerminal } from './local.js';
 
 function parseMetadataJson(value) {
@@ -23,6 +23,40 @@ function parseMetadataJson(value) {
 
 function normalizeNonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+export function __internal__mergeLiveE2BSessionMetadata(sessionRecord, liveSessionInfo) {
+  const metadata = parseMetadataJson(sessionRecord?.metadata_json) || {};
+  const liveSessionId = normalizeNonEmptyString(liveSessionInfo?.sessionId);
+  const liveAgentSessionId = normalizeNonEmptyString(liveSessionInfo?.agentSessionId);
+
+  if (!liveSessionId && !liveAgentSessionId) {
+    return {
+      changed: false,
+      metadata,
+      sessionRecord,
+    };
+  }
+
+  const nextMetadata = {
+    ...metadata,
+    ...(liveSessionId ? { sandboxSessionId: liveSessionId } : {}),
+    ...(liveAgentSessionId ? { agentSessionId: liveAgentSessionId } : {}),
+  };
+  const changed =
+    nextMetadata.sandboxSessionId !== metadata?.sandboxSessionId ||
+    nextMetadata.agentSessionId !== metadata?.agentSessionId;
+
+  return {
+    changed,
+    metadata: nextMetadata,
+    sessionRecord: changed
+      ? {
+          ...sessionRecord,
+          metadata_json: nextMetadata,
+        }
+      : sessionRecord,
+  };
 }
 
 export function buildE2BSessionLaunchSpec(sessionRecord, metadata = parseMetadataJson(sessionRecord?.metadata_json)) {
@@ -80,6 +114,27 @@ export function resolveE2BSessionTerminalSeed(sessionRecord) {
   };
 }
 
+export function __internal__resolveE2BTerminalProcessId(existingProcessId, sessionSeed) {
+  return normalizeNonEmptyString(sessionSeed?.processId) || normalizeNonEmptyString(existingProcessId);
+}
+
+async function refreshE2BSessionRecordFromSandbox(sessionRecord, context) {
+  const sessionId = normalizeNonEmptyString(sessionRecord?.session_id);
+
+  if (!sessionId || context?.runtime !== 'e2b') {
+    return sessionRecord;
+  }
+
+  const liveSessionInfo = await getLiveE2BSessionInfo(context, sessionId).catch(() => null);
+  const merged = __internal__mergeLiveE2BSessionMetadata(sessionRecord, liveSessionInfo);
+
+  if (merged.changed) {
+    e2bSessionDb.touch(sessionId, { metadata: merged.metadata });
+  }
+
+  return merged.sessionRecord;
+}
+
 export async function resolveTerminalRecord(projectName, userId, record, options = {}) {
   const seededRecord = {
     ...record,
@@ -94,7 +149,10 @@ export async function resolveTerminalRecord(projectName, userId, record, options
     const requestedSessionId = normalizeNonEmptyString(options.sessionId);
 
     if (requestedSessionId) {
-      const sessionRecord = e2bSessionDb.getBySessionId(requestedSessionId);
+      const storedSessionRecord = e2bSessionDb.getBySessionId(requestedSessionId);
+      const sessionRecord = storedSessionRecord
+        ? await refreshE2BSessionRecordFromSandbox(storedSessionRecord, context)
+        : null;
       if (
         sessionRecord &&
         sessionRecord.sandbox_id === context.sandboxId &&
@@ -103,9 +161,10 @@ export async function resolveTerminalRecord(projectName, userId, record, options
         const sessionSeed = resolveE2BSessionTerminalSeed(sessionRecord);
         ensuredRecord = {
           ...ensuredRecord,
-          processId: sessionSeed.resetProcessId
-            ? null
-            : (sessionSeed.processId || ensuredRecord.processId || null),
+          // Do not reuse the chat bridge process for claude-native sessions,
+          // but keep reusing any terminal-owned interactive process we already
+          // created for this session shell.
+          processId: __internal__resolveE2BTerminalProcessId(ensuredRecord.processId, sessionSeed),
           metadata: {
             ...(ensuredRecord.metadata || {}),
             e2bSessionId: requestedSessionId,

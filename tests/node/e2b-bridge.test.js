@@ -33,6 +33,7 @@ const {
 } = await import('../../server/lib/cli-auth-status.js');
 const {
   summarizeE2BBridgeError,
+  __internal__runE2BAcpPromptWithTimeout,
 } = await import('../../server/providers/e2b/session-bridge.js');
 const {
   buildNativeClaudeLaunchScript,
@@ -49,6 +50,7 @@ const {
 const {
   coalesceHistoryMessages,
   fetchHistory,
+  mergeE2BHistoryMessages,
   normalizeEvent,
 } = await import('../../server/providers/e2b/adapter.js');
 const {
@@ -111,6 +113,36 @@ test('resolveE2BTemplate maps legacy cloudagent to the project template', () => 
   delete process.env.E2B_TEMPLATE_NAME;
 
   assert.equal(resolveE2BTemplate(), 'claudecodeui-cloud-agent:latest');
+});
+
+test('runE2BAcpPromptWithTimeout resolves prompt responses before the timeout', async () => {
+  const result = await __internal__runE2BAcpPromptWithTimeout(
+    async () => 'ok',
+    {
+      sessionId: 'e2b_timeout_ok',
+      timeoutMs: 50,
+    },
+  );
+
+  assert.equal(result, 'ok');
+});
+
+test('runE2BAcpPromptWithTimeout rejects hung prompt requests with a transport timeout error', async () => {
+  await assert.rejects(
+    __internal__runE2BAcpPromptWithTimeout(
+      () => new Promise(() => {}),
+      {
+        sessionId: 'e2b_timeout_hang',
+        timeoutMs: 20,
+      },
+    ),
+    (error) => {
+      assert.equal(error?.code, 'E2B_ACP_PROMPT_TIMEOUT');
+      assert.match(error?.message || '', /sandbox acknowledged the request/i);
+      assert.equal(error?.sessionId, 'e2b_timeout_hang');
+      return true;
+    },
+  );
 });
 
 test('resolveE2BTemplate falls back to E2B_TEMPLATE_NAME when E2B_TEMPLATE is unset', () => {
@@ -1195,6 +1227,21 @@ test('summarizeE2BBridgeError exposes actionable Codex bridge hints', () => {
   assert.match(summary, /loopback proxy url/i);
 });
 
+test('summarizeE2BBridgeError unwraps structured error payloads', () => {
+  const error = new Error('[object Object]');
+  error.data = {
+    message: {
+      error: {
+        message: 'Country, region, or territory not supported',
+      },
+    },
+  };
+
+  const summary = summarizeE2BBridgeError(error, { agent: 'claude' });
+
+  assert.equal(summary, 'Country, region, or territory not supported');
+});
+
 test('normalizeEvent reads nested payload.params.update session updates from sandbox-agent', () => {
   const messages = normalizeEvent(
     {
@@ -1317,6 +1364,82 @@ test('fetchHistory falls back to persisted local E2B messages when sandbox histo
   assert.equal(history.messages[1].kind, 'text');
   assert.equal(history.messages[1].role, 'assistant');
   assert.equal(history.messages[1].content, 'HELLO_WORLD');
+});
+
+test('mergeE2BHistoryMessages keeps persisted prompts while taking newer live history', () => {
+  const sessionId = 'e2b_live_merge';
+  const merged = mergeE2BHistoryMessages(
+    [
+      {
+        id: 'assistant_live',
+        sessionId,
+        timestamp: '2026-03-31T12:00:03.000Z',
+        provider: 'codex',
+        kind: 'text',
+        role: 'assistant',
+        content: 'latest assistant response',
+      },
+      {
+        id: 'tool_live',
+        sessionId,
+        timestamp: '2026-03-31T12:00:04.000Z',
+        provider: 'codex',
+        kind: 'tool_result',
+        toolId: 'tool-1',
+        content: 'done',
+        isError: false,
+      },
+    ],
+    [
+      {
+        id: 'prompt_local',
+        sessionId,
+        timestamp: '2026-03-31T12:00:00.000Z',
+        provider: 'codex',
+        kind: 'text',
+        role: 'user',
+        content: 'latest user prompt',
+      },
+      {
+        id: 'assistant_live_duplicate',
+        sessionId,
+        timestamp: '2026-03-31T12:00:03.000Z',
+        provider: 'codex',
+        kind: 'text',
+        role: 'assistant',
+        content: 'latest assistant response',
+      },
+    ],
+  );
+
+  assert.deepEqual(
+    merged.map((message) => ({
+      kind: message.kind,
+      role: message.role || null,
+      content: message.content || '',
+      timestamp: message.timestamp,
+    })),
+    [
+      {
+        kind: 'text',
+        role: 'user',
+        content: 'latest user prompt',
+        timestamp: '2026-03-31T12:00:00.000Z',
+      },
+      {
+        kind: 'text',
+        role: 'assistant',
+        content: 'latest assistant response',
+        timestamp: '2026-03-31T12:00:03.000Z',
+      },
+      {
+        kind: 'tool_result',
+        role: null,
+        content: 'done',
+        timestamp: '2026-03-31T12:00:04.000Z',
+      },
+    ],
+  );
 });
 
 test('summarizeE2BBridgeError explains ACP headers timeouts', () => {

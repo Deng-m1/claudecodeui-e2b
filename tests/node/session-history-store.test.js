@@ -152,3 +152,78 @@ test('session history delta requests reset when the conversation shape changed',
   assert.equal(delta.lastSeq, 6);
   assert.deepEqual(delta.messages.map((message) => message.id), ['message-5', 'message-6']);
 });
+
+test('remote host history merges the remote native snapshot with persisted local error rows', async () => {
+  let remoteLoaderCalled = false;
+
+  const result = await fetchSessionHistory(
+    'remote-session-history-test',
+    {
+      provider: 'codex',
+      projectName: 'remote__workspace-history-test',
+      __remoteMessageRows: () => ([
+        {
+          message_json: JSON.stringify({
+            id: 'local-user-1',
+            sessionId: 'remote-session-history-test',
+            timestamp: '2026-04-01T00:00:04.000Z',
+            provider: 'codex',
+            kind: 'text',
+            role: 'user',
+            content: 'resume this session',
+          }),
+        },
+        {
+          message_json: JSON.stringify({
+            id: 'local-error-1',
+            sessionId: 'remote-session-history-test',
+            timestamp: '2026-04-01T00:00:05.000Z',
+            provider: 'codex',
+            kind: 'error',
+            content: 'connect ECONNREFUSED 36.137.182.237:47100',
+          }),
+        },
+      ]),
+      __remoteHistoryLoader: async () => {
+        remoteLoaderCalled = true;
+        return {
+          messages: [
+            {
+              id: 'remote-assistant-1',
+              sessionId: 'remote-session-history-test',
+              timestamp: '2026-04-01T00:00:01.000Z',
+              provider: 'codex',
+              kind: 'text',
+              role: 'assistant',
+              content: 'older remote history 1',
+            },
+            {
+              id: 'remote-assistant-2',
+              sessionId: 'remote-session-history-test',
+              timestamp: '2026-04-01T00:00:02.000Z',
+              provider: 'codex',
+              kind: 'text',
+              role: 'assistant',
+              content: 'older remote history 2',
+            },
+          ],
+          tokenUsage: null,
+          fingerprint: 'remote-history-v1',
+        };
+      },
+    },
+    { mode: 'bootstrap', limit: '10' },
+  );
+
+  assert.equal(remoteLoaderCalled, true);
+  assert.equal(result.total, 4);
+  assert.deepEqual(
+    result.messages.map((message) => message.content),
+    [
+      'older remote history 1',
+      'older remote history 2',
+      'resume this session',
+      'connect ECONNREFUSED 36.137.182.237:47100',
+    ],
+  );
+});

@@ -26,3 +26,31 @@ export function getProviderMatrix(): string[] {
     .map((value) => value.trim())
     .filter(Boolean);
 }
+
+export type RemoteHostE2EConfig = {
+  label: string;
+  host: string;
+  port: string;
+  username: string;
+  password: string;
+  workspaceRoot: string;
+};
+
+export function getRemoteHostE2EConfig(): RemoteHostE2EConfig | null {
+  const host = process.env.REMOTE_HOST_E2E_HOST?.trim();
+  const username = process.env.REMOTE_HOST_E2E_USERNAME?.trim();
+  const password = process.env.REMOTE_HOST_E2E_PASSWORD?.trim();
+
+  if (!host || !username || !password) {
+    return null;
+  }
+
+  return {
+    label: process.env.REMOTE_HOST_E2E_LABEL?.trim() || `playwright-remote-host-${Date.now()}`,
+    host,
+    port: process.env.REMOTE_HOST_E2E_PORT?.trim() || '22',
+    username,
+    password,
+    workspaceRoot: process.env.REMOTE_HOST_E2E_WORKSPACE_ROOT?.trim() || '/root',
+  };
+}

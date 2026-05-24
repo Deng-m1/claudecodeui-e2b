@@ -4,6 +4,7 @@ import { preferredProjectQuery } from './config';
 export type LiveProject = {
   name: string;
   displayName?: string;
+  fullPath?: string;
   runtime?: string;
   kind?: string;
   sessions?: Array<{ id: string }>;
@@ -15,6 +16,10 @@ export type LiveProject = {
     branch?: string | null;
     repoUrl?: string | null;
     workspacePath?: string | null;
+  } | null;
+  remote?: {
+    label?: string | null;
+    workspaceRoot?: string | null;
   } | null;
   e2bSessions?: Array<{ id: string }>;
 };

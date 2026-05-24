@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 
+// store.js delegates to remoteHostSessionsDb in every history lookup; ensure the
+// init.sql + migrations have run on the in-memory test database so the
+// remote_host_* tables exist before any test queries them.
+const { initializeDatabase } = await import('../../server/database/db.js');
+await initializeDatabase();
 const { fetchSessionHistory, clearSessionHistoryCache } = await import('../../server/services/session-history/store.js');
 const { getProvider } = await import('../../server/providers/registry.js');
 

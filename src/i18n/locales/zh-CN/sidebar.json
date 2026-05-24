@@ -16,6 +16,7 @@
     "fetchingProjects": "正在获取您的 Claude 项目和会话",
     "projects": "项目",
     "localSection": "本地",
+    "remoteSection": "远程",
     "cloudSection": "云端",
     "sessionCountLabel_one": "{{shown}} 个会话",
     "sessionCountLabel_other": "{{shown}} 个会话",

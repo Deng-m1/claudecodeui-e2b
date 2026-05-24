@@ -3,6 +3,27 @@ import type { Project, ProjectSession, RuntimeMode, SessionProvider } from '../t
 const hasSession = (session: ProjectSession | null | undefined): session is ProjectSession =>
   Boolean(session?.id);
 
+const isRuntimeMode = (value: unknown): value is RuntimeMode =>
+  value === 'local' || value === 'e2b' || value === 'remote_host';
+
+const readExplicitSessionRuntime = (
+  session: ProjectSession | null | undefined,
+): RuntimeMode | null => {
+  if (!session) {
+    return null;
+  }
+
+  if (isRuntimeMode(session.__runtime)) {
+    return session.__runtime;
+  }
+
+  if (isRuntimeMode(session.runtime)) {
+    return session.runtime;
+  }
+
+  return null;
+};
+
 function hasLocalProviderSessions(project: Project | null | undefined): boolean {
   if (!project) {
     return false;
@@ -53,20 +74,35 @@ export const isCloudProject = (project: Project | null | undefined): boolean => 
   return project.runtime === 'e2b' || project.kind === 'cloud';
 };
 
+export const getProjectSessionRuntime = (
+  project: Project | null | undefined,
+): RuntimeMode => {
+  if (project?.runtime === 'remote_host') {
+    return 'remote_host';
+  }
+
+  return isCloudProject(project) ? 'e2b' : 'local';
+};
+
+export const getResolvedSessionRuntime = (
+  session: ProjectSession | null | undefined,
+  project: Project | null | undefined,
+): RuntimeMode => readExplicitSessionRuntime(session) || getProjectSessionRuntime(project);
+
 export const resolveSessionRuntime = (
   session: ProjectSession | null | undefined,
 ): RuntimeMode =>
-  session?.__runtime === 'e2b' ? 'e2b' : 'local';
+  readExplicitSessionRuntime(session) || 'local';
 
 export const resolveSelectionRuntime = (
   project: Project | null | undefined,
   session: ProjectSession | null | undefined,
 ): RuntimeMode => {
   if (hasSession(session)) {
-    return resolveSessionRuntime(session);
+    return getResolvedSessionRuntime(session, project);
   }
 
-  return isCloudProject(project) ? 'e2b' : 'local';
+  return getProjectSessionRuntime(project);
 };
 
 export const isCloudSelection = (
@@ -80,11 +116,11 @@ export const resolveEffectiveRuntimeMode = (
   draftRuntime: RuntimeMode = 'local',
 ): RuntimeMode => {
   if (hasSession(session)) {
-    return resolveSessionRuntime(session);
+    return getResolvedSessionRuntime(session, project);
   }
 
-  if (isCloudProject(project)) {
-    return 'e2b';
+  if (project) {
+    return getProjectSessionRuntime(project);
   }
 
   return draftRuntime;
@@ -96,14 +132,14 @@ export const resolveSelectionProvider = (
   fallbackProvider: SessionProvider = 'claude',
 ): SessionProvider => {
   if (hasSession(session)) {
-    if (session.__runtime === 'e2b') {
+    if (getResolvedSessionRuntime(session, project) === 'e2b') {
       return 'e2b';
     }
 
     return (session.__provider || fallbackProvider) as SessionProvider;
   }
 
-  return isCloudProject(project) ? 'e2b' : fallbackProvider;
+  return getProjectSessionRuntime(project) === 'e2b' ? 'e2b' : fallbackProvider;
 };
 
 export const isSameSelectedSession = (
@@ -125,7 +161,7 @@ export const isSameSelectedSession = (
   }
 
   if (
-    selectedSession.__runtime !== undefined &&
+    readExplicitSessionRuntime(selectedSession) !== null &&
     resolveSessionRuntime(selectedSession) !== resolveSessionRuntime(candidateSession)
   ) {
     return false;

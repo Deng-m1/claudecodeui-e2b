@@ -1,6 +1,6 @@
 import type { Dispatch, SetStateAction } from 'react';
 
-export type SettingsMainTab = 'agents' | 'appearance' | 'git' | 'api' | 'authCenter' | 'tasks' | 'notifications' | 'plugins' | 'e2b';
+export type SettingsMainTab = 'agents' | 'appearance' | 'git' | 'api' | 'authCenter' | 'tasks' | 'notifications' | 'plugins' | 'e2b' | 'remoteHosts';
 export type AgentProvider = 'claude' | 'cursor' | 'codex' | 'gemini';
 export type AgentCategory = 'account' | 'permissions' | 'mcp';
 export type ProjectSortOrder = 'name' | 'date';
@@ -25,8 +25,8 @@ export type SettingsProject = {
   displayName?: string;
   fullPath?: string;
   path?: string;
-  kind?: 'local' | 'cloud';
-  runtime?: 'local' | 'e2b';
+  kind?: 'local' | 'cloud' | 'remote';
+  runtime?: 'local' | 'e2b' | 'remote_host';
   authSelections?: Record<string, unknown> | null;
   cloud?: {
     sandboxId?: string;

@@ -12,7 +12,7 @@ import type {
   ProjectsUpdatedMessage,
   SessionProvider,
 } from '../types/app';
-import { isCloudProject } from '../utils/sessionSelection';
+import { getResolvedSessionRuntime, isCloudProject } from '../utils/sessionSelection';
 
 type UseProjectsStateArgs = {
   sessionId?: string;
@@ -64,22 +64,23 @@ const normalizeSessionSelection = (
   project: Project,
 ): ProjectSession => {
   const projectPath = project.cloud?.workspacePath || project.fullPath || project.path || '';
+  const sessionRuntime = getResolvedSessionRuntime(rawSession, project);
 
   // Check local provider lists first (same priority as sidebar's getAllSessions).
   if (project.sessions?.some((s) => s.id === rawSession.id)) {
-    return { ...rawSession, __provider: rawSession.__provider || 'claude', __runtime: rawSession.__runtime || 'local', __projectName: rawSession.__projectName || project.name, __projectPath: rawSession.__projectPath || projectPath };
+    return { ...rawSession, __provider: rawSession.__provider || 'claude', __runtime: sessionRuntime, __projectName: rawSession.__projectName || project.name, __projectPath: rawSession.__projectPath || projectPath };
   }
   if (project.cursorSessions?.some((s) => s.id === rawSession.id)) {
-    return { ...rawSession, __provider: rawSession.__provider || 'cursor', __runtime: rawSession.__runtime || 'local', __projectName: rawSession.__projectName || project.name, __projectPath: rawSession.__projectPath || projectPath };
+    return { ...rawSession, __provider: rawSession.__provider || 'cursor', __runtime: sessionRuntime, __projectName: rawSession.__projectName || project.name, __projectPath: rawSession.__projectPath || projectPath };
   }
   if (project.codexSessions?.some((s) => s.id === rawSession.id)) {
-    return { ...rawSession, __provider: rawSession.__provider || 'codex', __runtime: rawSession.__runtime || 'local', __projectName: rawSession.__projectName || project.name, __projectPath: rawSession.__projectPath || projectPath };
+    return { ...rawSession, __provider: rawSession.__provider || 'codex', __runtime: sessionRuntime, __projectName: rawSession.__projectName || project.name, __projectPath: rawSession.__projectPath || projectPath };
   }
   if (project.geminiSessions?.some((s) => s.id === rawSession.id)) {
-    return { ...rawSession, __provider: rawSession.__provider || 'gemini', __runtime: rawSession.__runtime || 'local', __projectName: rawSession.__projectName || project.name, __projectPath: rawSession.__projectPath || projectPath };
+    return { ...rawSession, __provider: rawSession.__provider || 'gemini', __runtime: sessionRuntime, __projectName: rawSession.__projectName || project.name, __projectPath: rawSession.__projectPath || projectPath };
   }
   if (project.e2bSessions?.some((s) => s.id === rawSession.id)) {
-    return { ...rawSession, __provider: rawSession.__provider || resolveCloudSessionProvider(rawSession), __runtime: rawSession.__runtime || 'e2b', __projectName: rawSession.__projectName || project.name, __projectPath: rawSession.__projectPath || projectPath };
+    return { ...rawSession, __provider: rawSession.__provider || resolveCloudSessionProvider(rawSession), __runtime: sessionRuntime, __projectName: rawSession.__projectName || project.name, __projectPath: rawSession.__projectPath || projectPath };
   }
 
   // Session not found in any list — preserve whatever metadata it already has,
@@ -87,7 +88,7 @@ const normalizeSessionSelection = (
   return {
     ...rawSession,
     __provider: rawSession.__provider || 'claude',
-    __runtime: rawSession.__runtime,
+    __runtime: sessionRuntime,
     __projectName: project.name,
     __projectPath: projectPath,
   };

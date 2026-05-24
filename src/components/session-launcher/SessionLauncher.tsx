@@ -477,7 +477,7 @@ export default function SessionLauncher({
 
     dispatchLaunchConfig({
       provider,
-      runtimeMode: 'local',
+      runtimeMode: selectedLocalProject.runtime || 'local',
       claudeModel,
       cursorModel,
       codexModel,

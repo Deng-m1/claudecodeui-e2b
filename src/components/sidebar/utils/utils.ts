@@ -1,6 +1,6 @@
 import type { TFunction } from 'i18next';
 import type { Project, SessionProvider } from '../../../types/app';
-import { isCloudProject as isResolvedCloudProject } from '../../../utils/sessionSelection';
+import { getResolvedSessionRuntime, isCloudProject as isResolvedCloudProject } from '../../../utils/sessionSelection';
 import { parseDateString } from '../../../utils/dateUtils';
 import type {
   AdditionalSessionsByProject,
@@ -150,22 +150,22 @@ export const getAllSessions = (
     : projectAdditionalSessions;
 
   for (const session of [...(project.sessions || []), ...(localAdditionalSessions.claude || [])]) {
-    tryAdd({ ...session, __provider: 'claude' as const, __runtime: 'local' as const });
+    tryAdd({ ...session, __provider: 'claude' as const, __runtime: getResolvedSessionRuntime(session, project) });
   }
   for (const session of [...(project.cursorSessions || []), ...(localAdditionalSessions.cursor || [])]) {
-    tryAdd({ ...session, __provider: 'cursor' as const, __runtime: 'local' as const });
+    tryAdd({ ...session, __provider: 'cursor' as const, __runtime: getResolvedSessionRuntime(session, project) });
   }
   for (const session of [...(project.codexSessions || []), ...(localAdditionalSessions.codex || [])]) {
-    tryAdd({ ...session, __provider: 'codex' as const, __runtime: 'local' as const });
+    tryAdd({ ...session, __provider: 'codex' as const, __runtime: getResolvedSessionRuntime(session, project) });
   }
   for (const session of [...(project.geminiSessions || []), ...(localAdditionalSessions.gemini || [])]) {
-    tryAdd({ ...session, __provider: 'gemini' as const, __runtime: 'local' as const });
+    tryAdd({ ...session, __provider: 'gemini' as const, __runtime: getResolvedSessionRuntime(session, project) });
   }
   for (const session of (project.e2bSessions || [])) {
     tryAdd({
       ...session,
       __provider: resolveE2BSessionProvider(session as Record<string, unknown>),
-      __runtime: 'e2b' as const,
+      __runtime: getResolvedSessionRuntime(session, project),
     });
   }
 

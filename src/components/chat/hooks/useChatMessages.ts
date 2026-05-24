@@ -8,6 +8,37 @@ import type { ChatMessage, SubagentChildTool } from '../types/types';
 import { decodeHtmlEntities, unescapeWithMathProtection, formatUsageLimitText } from '../utils/chatFormatting';
 import { normalizeToolDisplayCall } from '../utils/toolNormalization';
 
+function stringifyChatContent(value: unknown, fallback = ''): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (value && typeof value === 'object') {
+    for (const key of ['message', 'error', 'detail', 'details', 'title']) {
+      const nested = (value as Record<string, unknown>)[key];
+      if (typeof nested === 'string' && nested.trim()) {
+        return nested;
+      }
+    }
+
+    try {
+      const json = JSON.stringify(value);
+      if (json && json !== '{}' && json !== '[]') {
+        return json;
+      }
+    } catch {
+      // Ignore circular values and keep falling back.
+    }
+  }
+
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+
+  const text = String(value);
+  return text === '[object Object]' ? fallback : text;
+}
+
 /**
  * Convert NormalizedMessage[] from the session store into ChatMessage[]
  * that the existing UI components expect.
@@ -130,7 +161,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
       case 'error':
         converted.push({
           type: 'error',
-          content: msg.content || 'Unknown error',
+          content: stringifyChatContent(msg.content, 'Unknown error'),
           timestamp: msg.timestamp,
         });
         break;

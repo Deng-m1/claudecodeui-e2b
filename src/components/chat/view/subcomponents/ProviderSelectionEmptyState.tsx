@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Check, ChevronDown, Cloud, Monitor, GitBranch, Play, Loader2 } from "lucide-react";
+import { Check, ChevronDown, Cloud, Monitor, GitBranch, Play, Loader2, Server } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import SessionProviderLogo from "../../../llm-logo-provider/SessionProviderLogo";
 import {
@@ -556,15 +556,33 @@ export default function ProviderSelectionEmptyState({
   const repoUrl = typeof selectedProject?.cloud?.repoUrl === "string" ? selectedProject.cloud.repoUrl : "";
   const branch = typeof selectedProject?.cloud?.branch === "string" ? selectedProject.cloud.branch : "";
   const repoName = repoUrl ? repoUrl.replace(/\/+$/, "").replace(/\.git$/, "").split("/").pop() : "";
+  const isRemoteHostProject = selectedProject?.runtime === "remote_host" || runtimeMode === "remote_host";
+  const visibleProviders = isRemoteHostProject
+    ? PROVIDERS.filter((candidate) => candidate.id === "claude" || candidate.id === "codex")
+    : PROVIDERS;
+
+  useEffect(() => {
+    if (!isRemoteHostProject) {
+      return;
+    }
+
+    if (provider === "claude" || provider === "codex") {
+      return;
+    }
+
+    selectProvider("claude");
+  }, [isRemoteHostProject, provider]);
 
   const providerCards = (
     <div className="mb-6 grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-2.5">
-      {PROVIDERS.map((p) => {
+      {visibleProviders.map((p) => {
         const active = provider === p.id;
         return (
           <button
             key={p.id}
             onClick={() => selectProvider(p.id)}
+            data-testid="provider-selection-card"
+            data-provider-id={p.id}
             className={`
               relative flex flex-col items-center gap-2.5 rounded-xl border-[1.5px] px-2
               pb-4 pt-5 transition-all duration-150
@@ -667,6 +685,39 @@ export default function ProviderSelectionEmptyState({
                 />
               </div>
             )}
+          </div>
+        </div>
+      );
+    }
+
+    if (isRemoteHostProject) {
+      return (
+        <div className="flex h-full items-center justify-center px-4">
+          <div
+            data-testid="provider-selection-remote-host"
+            className="w-full max-w-2xl rounded-2xl border border-border/60 bg-card/80 p-8 text-center shadow-sm"
+          >
+            <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-amber-300/50 bg-amber-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
+              <Server className="h-3.5 w-3.5" />
+              {t("providerSelection.remoteHost.title", { defaultValue: "Remote Host Project" })}
+            </div>
+            <h2 className="text-lg font-semibold tracking-tight text-foreground sm:text-xl">
+              {selectedProject?.displayName || t("providerSelection.remoteHost.start", { defaultValue: "Remote Host Session" })}
+            </h2>
+            <p className="mt-2 text-[13px] text-muted-foreground">
+              {t("providerSelection.remoteHost.description", {
+                defaultValue: "Chat runs the remote host's own Claude or Codex CLI and resumes against the remote machine's native session files.",
+              })}
+            </p>
+            {selectedProject?.fullPath && (
+              <p className="mt-3 rounded-lg bg-muted/50 px-3 py-2 font-mono text-xs text-muted-foreground">
+                {selectedProject.fullPath}
+              </p>
+            )}
+            <div className="mt-6">
+              {providerCards}
+              {modelPicker}
+            </div>
           </div>
         </div>
       );

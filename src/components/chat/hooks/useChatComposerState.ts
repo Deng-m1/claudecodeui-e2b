@@ -10,6 +10,7 @@ import type {
   TouchEvent,
 } from 'react';
 import { useDropzone } from 'react-dropzone';
+import { useTranslation } from 'react-i18next';
 import { authenticatedFetch } from '../../../utils/api';
 import { normalizeCodexFeatureToggles } from '../../settings/constants/constants';
 import { thinkingModes } from '../constants/thinkingModes';
@@ -136,6 +137,7 @@ export function useChatComposerState({
   setIsUserScrolledUp,
   setPendingPermissionRequests,
 }: UseChatComposerStateArgs) {
+  const { t } = useTranslation('chat');
   // runtimeMode is already the effectiveRuntimeMode (computed in ChatInterface
   // via normalizeSessionSelection metadata). No re-derivation needed.
   const effectiveRuntimeMode = runtimeMode;
@@ -629,11 +631,39 @@ export function useChatComposerState({
           ? selectedProject.cloud.sandboxId
           : null;
       const sessionSummary = getNotificationSessionSummary(selectedSession, currentInput);
+      const resolvedProjectName =
+        selectedSession?.__projectName ||
+        selectedProject?.name ||
+        '';
 
       const currentModel =
         provider === 'cursor' ? cursorModel :
         provider === 'codex' ? codexModel :
         provider === 'gemini' ? geminiModel : claudeModel;
+
+      if (effectiveRuntimeMode === 'remote_host') {
+        if (provider !== 'claude' && provider !== 'codex') {
+          addMessage({
+            type: 'assistant',
+            content: t('remoteHost.unsupportedProvider', {
+              defaultValue: 'Remote host chat currently supports Claude and Codex. Use the Shell tab for other CLIs.',
+            }),
+            timestamp: Date.now(),
+          });
+          setIsLoading(false);
+          setCanAbortSession(false);
+          return;
+        }
+
+        setCanAbortSession(false);
+        setClaudeStatus({
+          text: t('remoteHost.runningStatus', {
+            defaultValue: 'Running on remote host',
+          }),
+          tokens: 0,
+          can_interrupt: false,
+        });
+      }
 
       if (effectiveRuntimeMode === 'e2b') {
         sendMessage({
@@ -644,11 +674,13 @@ export function useChatComposerState({
             agent: provider,
             cwd: resolvedProjectPath,
             projectPath: resolvedProjectPath,
+            projectName: resolvedProjectName,
             sessionId: effectiveSessionId,
             resume: Boolean(effectiveSessionId),
             model: currentModel,
             sandboxId,
             sessionSummary,
+            runtimeMode: effectiveRuntimeMode,
             permissionMode,
             featureToggles: codexFeatureToggles,
           },
@@ -661,11 +693,13 @@ export function useChatComposerState({
           options: {
             cwd: resolvedProjectPath,
             projectPath: resolvedProjectPath,
+            projectName: resolvedProjectName,
             sessionId: effectiveSessionId,
             resume: Boolean(effectiveSessionId),
             model: cursorModel,
             skipPermissions: toolsSettings?.skipPermissions || false,
             sessionSummary,
+            runtimeMode: effectiveRuntimeMode,
             toolsSettings,
           },
         });
@@ -677,10 +711,12 @@ export function useChatComposerState({
           options: {
             cwd: resolvedProjectPath,
             projectPath: resolvedProjectPath,
+            projectName: resolvedProjectName,
             sessionId: effectiveSessionId,
             resume: Boolean(effectiveSessionId),
             model: codexModel,
             sessionSummary,
+            runtimeMode: effectiveRuntimeMode,
             permissionMode: permissionMode === 'plan' ? 'default' : permissionMode,
             featureToggles: codexFeatureToggles,
           },
@@ -693,10 +729,12 @@ export function useChatComposerState({
           options: {
             cwd: resolvedProjectPath,
             projectPath: resolvedProjectPath,
+            projectName: resolvedProjectName,
             sessionId: effectiveSessionId,
             resume: Boolean(effectiveSessionId),
             model: geminiModel,
             sessionSummary,
+            runtimeMode: effectiveRuntimeMode,
             permissionMode,
             toolsSettings,
           },
@@ -708,9 +746,11 @@ export function useChatComposerState({
           options: {
             projectPath: resolvedProjectPath,
             cwd: resolvedProjectPath,
+            projectName: resolvedProjectName,
             sessionId: effectiveSessionId,
             resume: Boolean(effectiveSessionId),
             toolsSettings,
+            runtimeMode: effectiveRuntimeMode,
             permissionMode,
             model: claudeModel,
             sessionSummary,

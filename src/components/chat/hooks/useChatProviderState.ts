@@ -4,6 +4,7 @@ import { DEFAULT_CODEX_PERMISSION_MODE, normalizeCodexPermissionMode } from '../
 import { CLAUDE_MODELS, CODEX_MODELS, CURSOR_MODELS, GEMINI_MODELS } from '../../../../shared/modelConstants';
 import type { PendingPermissionRequest, PermissionMode } from '../types/types';
 import type { ProjectSession, RuntimeMode, SessionProvider } from '../../../types/app';
+import { resolveSessionRuntime } from '../../../utils/sessionSelection';
 
 interface UseChatProviderStateArgs {
   selectedSession: ProjectSession | null;
@@ -102,13 +103,14 @@ export function useChatProviderState({ selectedSession }: UseChatProviderStateAr
   }, [provider, selectedSession?.__provider]);
 
   useEffect(() => {
-    if (!selectedSession?.__runtime || selectedSession.__runtime === runtimeMode) {
+    const selectedRuntime = resolveSessionRuntime(selectedSession);
+    if (!selectedSession?.id || selectedRuntime === runtimeMode) {
       return;
     }
 
-    setRuntimeModeState(selectedSession.__runtime);
-    localStorage.setItem('runtime-mode', selectedSession.__runtime);
-  }, [runtimeMode, selectedSession?.__runtime]);
+    setRuntimeModeState(selectedRuntime);
+    localStorage.setItem('runtime-mode', selectedRuntime);
+  }, [runtimeMode, selectedSession?.id, selectedSession?.__runtime, selectedSession?.runtime]);
 
   useEffect(() => {
     if (lastProviderRef.current === provider) {

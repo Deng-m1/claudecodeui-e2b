@@ -517,19 +517,96 @@ function parsePersistedMessageRow(row) {
   }
 }
 
-async function fetchPersistedHistory(sessionId, opts = {}) {
+function normalizeComparableText(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function stableJson(value) {
+  try {
+    return JSON.stringify(value ?? null);
+  } catch {
+    return String(value ?? '');
+  }
+}
+
+function getHistoryMessageSignature(message = {}) {
+  return JSON.stringify({
+    kind: message.kind || '',
+    role: message.role || '',
+    timestamp: message.timestamp || '',
+    content: normalizeComparableText(message.content),
+    text: normalizeComparableText(message.text),
+    toolName: message.toolName || '',
+    toolId: message.toolId || '',
+    toolInput: stableJson(message.toolInput),
+    toolResult: stableJson(message.toolResult),
+    isError: Boolean(message.isError),
+    exitCode: message.exitCode ?? null,
+  });
+}
+
+function normalizeSortTimestamp(value) {
+  const numeric = Date.parse(String(value || ''));
+  return Number.isFinite(numeric) ? numeric : Number.POSITIVE_INFINITY;
+}
+
+export function mergeE2BHistoryMessages(liveMessages = [], persistedMessages = []) {
+  const combined = [];
+  const seen = new Set();
+
+  const addMessages = (messages, source) => {
+    for (const message of messages) {
+      if (!message || typeof message !== 'object') {
+        continue;
+      }
+
+      const signature = getHistoryMessageSignature(message);
+      if (seen.has(signature)) {
+        continue;
+      }
+
+      seen.add(signature);
+      combined.push({
+        message,
+        source,
+        timestamp: normalizeSortTimestamp(message.timestamp),
+      });
+    }
+  };
+
+  addMessages(liveMessages, 'live');
+  addMessages(persistedMessages, 'persisted');
+
+  combined.sort((left, right) => {
+    if (left.timestamp !== right.timestamp) {
+      return left.timestamp - right.timestamp;
+    }
+
+    if (left.source !== right.source) {
+      return left.source === 'live' ? -1 : 1;
+    }
+
+    return 0;
+  });
+
+  return combined.map((entry) => entry.message);
+}
+
+async function loadPersistedHistoryMessages(sessionId) {
   const { e2bSessionMessagesDb } = await import('../../database/db.js');
   const rows = e2bSessionMessagesDb.getBySessionId(sessionId);
-  const persisted = rows
+  return rows
     .map(parsePersistedMessageRow)
     .filter((message) => message && typeof message === 'object');
+}
 
+async function fetchPersistedHistory(sessionId, opts = {}) {
+  const persisted = await loadPersistedHistoryMessages(sessionId);
   if (persisted.length === 0) {
     return null;
   }
 
-  const coalesced = coalesceHistoryMessages(persisted, sessionId);
-  return paginateMessages(coalesced, opts);
+  return paginateMessages(coalesceHistoryMessages(persisted, sessionId), opts);
 }
 
 /**
@@ -543,10 +620,10 @@ export async function fetchHistory(sessionId, opts = {}) {
   const { e2bSessionDb, e2bSessionMessagesDb } = await import('../../database/db.js');
   const { extractSandboxIdFromProjectName } = await import('./project-utils.js');
 
-  const persisted = await fetchPersistedHistory(sessionId, opts);
-  if (persisted) {
-    return persisted;
-  }
+  const persistedMessages = await loadPersistedHistoryMessages(sessionId);
+  const persistedHistory = persistedMessages.length > 0
+    ? coalesceHistoryMessages(persistedMessages, sessionId)
+    : [];
 
   const sandboxId =
     extractSandboxIdFromProjectName(opts.projectName || '') ||
@@ -560,13 +637,13 @@ export async function fetchHistory(sessionId, opts = {}) {
   const client = getSandboxClient();
 
   if (!client) {
-    return { messages: [], total: 0, hasMore: false, offset: 0, limit: null };
+    return paginateMessages(persistedHistory, opts);
   }
 
   try {
     const session = await client.getSession(sessionId);
     if (!session) {
-      return { messages: [], total: 0, hasMore: false, offset: 0, limit: null };
+      return paginateMessages(persistedHistory, opts);
     }
 
     const eventsPage = await client.getEvents({ sessionId, limit: 500 });
@@ -589,16 +666,19 @@ export async function fetchHistory(sessionId, opts = {}) {
       normalized.push(...msgs);
     }
 
-    const mergedHistory = coalesceHistoryMessages(normalized, sessionId);
+    const liveHistory = coalesceHistoryMessages(normalized, sessionId);
+    const mergedHistory = mergeE2BHistoryMessages(liveHistory, persistedHistory);
 
-    for (const message of mergedHistory) {
-      e2bSessionMessagesDb.append(sessionId, message);
+    if (persistedMessages.length === 0) {
+      for (const message of mergedHistory) {
+        e2bSessionMessagesDb.append(sessionId, message);
+      }
     }
 
     return paginateMessages(mergedHistory, opts);
   } catch (error) {
     console.error('[E2B] Error fetching history:', error.message);
-    return { messages: [], total: 0, hasMore: false, offset: 0, limit: null };
+    return paginateMessages(persistedHistory, opts);
   }
 }
 

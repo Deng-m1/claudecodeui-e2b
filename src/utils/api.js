@@ -155,6 +155,42 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(workspaceData),
     }),
+  remoteHosts: {
+    list: () => authenticatedFetch('/api/remote-hosts'),
+    test: (payload) =>
+      authenticatedFetch('/api/remote-hosts/test', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }),
+    create: (payload) =>
+      authenticatedFetch('/api/remote-hosts', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }),
+    bootstrap: (payload) =>
+      authenticatedFetch('/api/remote-hosts/bootstrap', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }),
+    browse: (payload) =>
+      authenticatedFetch('/api/remote-hosts/browse', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }),
+    delete: (hostId) =>
+      authenticatedFetch(`/api/remote-hosts/${encodeURIComponent(hostId)}`, {
+        method: 'DELETE',
+      }),
+    addWorkspace: (hostId, payload) =>
+      authenticatedFetch(`/api/remote-hosts/${encodeURIComponent(hostId)}/workspaces`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }),
+    deleteWorkspace: (workspaceId) =>
+      authenticatedFetch(`/api/remote-hosts/workspaces/${encodeURIComponent(workspaceId)}`, {
+        method: 'DELETE',
+      }),
+  },
   readFile: (projectName, filePath) =>
     authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/file?filePath=${encodeURIComponent(filePath)}`),
   saveFile: (projectName, filePath, content) =>

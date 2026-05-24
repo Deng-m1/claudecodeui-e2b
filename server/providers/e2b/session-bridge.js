@@ -18,6 +18,7 @@ import {
 } from './sandbox-manager.js';
 import { buildE2BPermissionContext, normalizeE2BToolCall, normalizeEvent } from './adapter.js';
 import { NativeClaudeE2BRunner } from './native-claude-runner.js';
+import { stringifyE2BError } from './error-format.js';
 import { createNormalizedMessage } from '../types.js';
 import { e2bSandboxDb, e2bSessionDb, e2bSessionMessagesDb, credentialsDb, userDb, userClaudeSettingsDb } from '../../database/db.js';
 import {
@@ -44,6 +45,7 @@ const PERSISTED_MESSAGE_KINDS = new Set([
   'interactive_prompt',
   'task_notification',
 ]);
+const DEFAULT_E2B_ACP_PROMPT_TIMEOUT_MS = 90_000;
 
 function parseJsonRecord(value) {
   if (!value) {
@@ -58,6 +60,55 @@ function parseJsonRecord(value) {
     return JSON.parse(value);
   } catch {
     return null;
+  }
+}
+
+function getE2BAcpPromptTimeoutMs() {
+  const parsed = Number.parseInt(process.env.E2B_ACP_PROMPT_TIMEOUT_MS || '', 10);
+  return Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_E2B_ACP_PROMPT_TIMEOUT_MS;
+}
+
+function createE2BAcpPromptTimeoutError(sessionId, timeoutMs) {
+  const timeoutSeconds = Math.max(1, Math.round(timeoutMs / 1000));
+  const error = new Error(
+    `ACP transport timed out before the sandbox acknowledged the request for E2B session ${sessionId || 'unknown'} after ${timeoutSeconds}s.`,
+  );
+  error.name = 'E2BAcpPromptTimeoutError';
+  error.code = 'E2B_ACP_PROMPT_TIMEOUT';
+  error.sessionId = sessionId || null;
+  error.timeoutMs = timeoutMs;
+  return error;
+}
+
+export async function __internal__runE2BAcpPromptWithTimeout(promptOperation, options = {}) {
+  if (typeof promptOperation !== 'function') {
+    throw new TypeError('promptOperation must be a function');
+  }
+
+  const sessionId = typeof options.sessionId === 'string' ? options.sessionId : '';
+  const parsedTimeoutMs = Number.parseInt(String(options.timeoutMs || ''), 10);
+  const timeoutMs = Number.isFinite(parsedTimeoutMs) && parsedTimeoutMs > 0
+    ? parsedTimeoutMs
+    : getE2BAcpPromptTimeoutMs();
+
+  let timeoutHandle = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(createE2BAcpPromptTimeoutError(sessionId, timeoutMs));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => promptOperation()),
+      timeoutPromise,
+    ]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
   }
 }
 
@@ -485,16 +536,10 @@ async function applyCodexFeatureTogglesToSession(session, featureToggles = DEFAU
 }
 
 export function summarizeE2BBridgeError(error, context = {}) {
-  const baseMessage = error instanceof Error ? error.message : String(error || 'E2B bridge error');
+  const baseMessage = stringifyE2BError(error, 'E2B bridge error');
   const errorData = error && typeof error === 'object' && typeof error.data === 'object' ? error.data : null;
-  const detailedMessage =
-    typeof errorData?.message === 'string' && errorData.message.trim()
-      ? errorData.message.trim()
-      : '';
-  const agentStderr =
-    typeof errorData?.agentStderr === 'string' && errorData.agentStderr.trim()
-      ? errorData.agentStderr
-      : '';
+  const detailedMessage = stringifyE2BError(errorData?.message);
+  const agentStderr = stringifyE2BError(errorData?.agentStderr);
   const agent = String(context.agent || '').toLowerCase();
   const details = `${baseMessage}\n${detailedMessage}\n${agentStderr}\n${getAcpTransportErrorDetails(error)}`;
   const hints = [];
@@ -539,7 +584,7 @@ function withReadableE2BError(error, context = {}) {
 }
 
 function isAuthenticationRequiredError(error) {
-  const message = String(error?.message || error || '');
+  const message = stringifyE2BError(error);
   return /authentication required/i.test(message);
 }
 
@@ -637,6 +682,77 @@ function disposeBridge(sessionId) {
   activeBridgedSessions.delete(sessionId);
 }
 
+function getBridgeClient(bridged) {
+  if (!bridged) {
+    return null;
+  }
+
+  if (isNativeClaudeBridgeState(bridged)) {
+    return bridged.nativeRunner?.client || null;
+  }
+
+  return bridged.session?.sandbox || null;
+}
+
+function shouldReconnectE2BBridge(bridged, sandboxId = null) {
+  if (!bridged) {
+    return true;
+  }
+
+  const expectedSandboxId = sandboxId || bridged.sandboxId || null;
+  const activeClient = getSandboxClient();
+  const activeSandboxId = getSandboxId();
+
+  if (expectedSandboxId && activeSandboxId !== expectedSandboxId) {
+    return true;
+  }
+
+  const bridgeClient = getBridgeClient(bridged);
+  if (expectedSandboxId && !bridgeClient) {
+    return true;
+  }
+
+  if (activeClient && bridgeClient && activeClient !== bridgeClient) {
+    return true;
+  }
+
+  return false;
+}
+
+async function ensureFreshBridge(sessionId, options = {}) {
+  let bridged = activeBridgedSessions.get(sessionId);
+  const sessionRecord = e2bSessionDb.getBySessionId(sessionId);
+  const sandboxId = options.sandboxId || sessionRecord?.sandbox_id || bridged?.sandboxId || null;
+  const agent = options.agent || sessionRecord?.agent || bridged?.agent || 'claude';
+
+  if (shouldReconnectE2BBridge(bridged, sandboxId)) {
+    if (bridged) {
+      console.log(
+        `[E2B Bridge] Reconnecting stale bridge for ${sessionId} (sandbox=${sandboxId || 'unknown'})`,
+      );
+    }
+
+    await createE2BSession(sessionId, {
+      agent,
+      cwd: options.cwd,
+      model: options.model || sessionRecord?.model || null,
+      featureToggles: options.featureToggles,
+      resume: true,
+      sandboxId,
+      sandboxConnectHost: options.sandboxConnectHost || '',
+      ws: options.ws,
+      onMessage: options.onMessage,
+    });
+    bridged = activeBridgedSessions.get(sessionId);
+  }
+
+  return {
+    bridged,
+    sandboxId,
+    agent,
+  };
+}
+
 function shouldPersistMessage(msg) {
   if (!msg?.sessionId || !msg?.id || !PERSISTED_MESSAGE_KINDS.has(msg.kind)) {
     return false;
@@ -668,6 +784,49 @@ function safeUpdateSessionStatus(sessionId, status) {
     e2bSessionDb.updateStatus(sessionId, status);
   } catch (error) {
     console.warn('[E2B Bridge] Failed to update session status:', error?.message || error);
+  }
+}
+
+function syncE2BSessionConnectionMetadata(
+  sessionId,
+  {
+    sandboxSessionId = null,
+    agentSessionId = null,
+    sandboxId = null,
+    agent = null,
+    model = null,
+    runtime = null,
+    processId = null,
+    nativeClaudeSessionId = null,
+    status = null,
+  } = {},
+) {
+  try {
+    const record = e2bSessionDb.getBySessionId(sessionId);
+    if (!record) {
+      return null;
+    }
+
+    const currentMetadata = parseJsonRecord(record.metadata_json) || {};
+    const nextMetadata = {
+      ...currentMetadata,
+      ...(sandboxSessionId ? { sandboxSessionId } : {}),
+      ...(agentSessionId ? { agentSessionId } : {}),
+      ...(runtime ? { runtime } : {}),
+      ...(processId ? { processId } : {}),
+      ...(nativeClaudeSessionId ? { nativeClaudeSessionId } : {}),
+    };
+
+    e2bSessionDb.touch(sessionId, {
+      model: model || null,
+      status,
+      metadata: nextMetadata,
+    });
+
+    return nextMetadata;
+  } catch (error) {
+    console.warn('[E2B Bridge] Failed to sync session connection metadata:', error?.message || error);
+    return null;
   }
 }
 
@@ -863,7 +1022,7 @@ async function createNativeClaudeSession(sessionId, options) {
             sessionId,
             provider: 'claude',
             kind: 'error',
-            content: error?.message || 'Claude Code process stopped unexpectedly inside E2B.',
+            content: stringifyE2BError(error, 'Claude Code process stopped unexpectedly inside E2B.'),
           }),
         );
       }
@@ -895,6 +1054,18 @@ async function createNativeClaudeSession(sessionId, options) {
     nativeClaudeSessionId: startResult.nativeSessionId || current.nativeClaudeSessionId || null,
     pendingPermissions: startResult.pendingPermissions || current.pendingPermissions || [],
   }));
+
+  syncE2BSessionConnectionMetadata(sessionId, {
+    sandboxSessionId: sessionId,
+    agentSessionId: startResult.nativeSessionId || startResult.processId || sessionId,
+    sandboxId,
+    agent: agentId,
+    model,
+    runtime: 'claude-native',
+    processId: startResult.processId || null,
+    nativeClaudeSessionId: startResult.nativeSessionId || null,
+    status: 'active',
+  });
 
   return {
     sessionId,
@@ -1015,11 +1186,20 @@ export async function createE2BSession(sessionId, options) {
 
     await applyCodexFeatureTogglesToSession(session, featureToggles);
 
-    attachBridge(sessionId, session, {
-      agentId,
+  attachBridge(sessionId, session, {
+    agentId,
+    sandboxId: resolvedSandboxId,
+    ws,
+    onMessage,
+  });
+
+    syncE2BSessionConnectionMetadata(sessionId, {
+      sandboxSessionId: session.id,
+      agentSessionId: session.agentSessionId,
       sandboxId: resolvedSandboxId,
-      ws,
-      onMessage,
+      agent: agentId,
+      model,
+      status: 'active',
     });
 
     if (session.id !== sessionId) {
@@ -1057,28 +1237,7 @@ export async function createE2BSession(sessionId, options) {
  * @returns {Promise<void>}
  */
 export async function sendMessageToE2BSession(sessionId, message, options = {}) {
-  let bridged = activeBridgedSessions.get(sessionId);
-
-  if (!bridged || (options.sandboxId && bridged.sandboxId !== options.sandboxId)) {
-    const sessionRecord = e2bSessionDb.getBySessionId(sessionId);
-    const sandboxId = options.sandboxId || sessionRecord?.sandbox_id || null;
-    const agent = options.agent || sessionRecord?.agent || 'claude';
-
-    if (sandboxId) {
-      await createE2BSession(sessionId, {
-        agent,
-        cwd: options.cwd,
-        model: options.model || sessionRecord?.model || null,
-        featureToggles: options.featureToggles,
-        resume: true,
-        sandboxId,
-        sandboxConnectHost: options.sandboxConnectHost || '',
-        ws: options.ws,
-        onMessage: options.onMessage,
-      });
-      bridged = activeBridgedSessions.get(sessionId);
-    }
-  }
+  const { bridged, sandboxId, agent } = await ensureFreshBridge(sessionId, options);
 
   if (!bridged) {
     throw new Error(`No active E2B session: ${sessionId}`);
@@ -1096,7 +1255,7 @@ export async function sendMessageToE2BSession(sessionId, message, options = {}) 
     }
 
     console.log(`[E2B Bridge] Sending message to native Claude session ${sessionId}`);
-    persistPromptMessage(sessionId, bridged.agent || options.agent || 'claude', message);
+    persistPromptMessage(sessionId, bridged.agent || agent || 'claude', message);
     updateBridgeActivity(sessionId, true);
     let terminalStatus = 'idle';
 
@@ -1105,12 +1264,12 @@ export async function sendMessageToE2BSession(sessionId, message, options = {}) 
     } catch (error) {
       terminalStatus = 'error';
       throw withReadableE2BError(error, {
-        agent: bridged.agent || options.agent || 'claude',
-        sandboxId: bridged.sandboxId || options.sandboxId || null,
+        agent: bridged.agent || agent || 'claude',
+        sandboxId: bridged.sandboxId || sandboxId || null,
       });
     } finally {
       const nativeClaudeClient = bridged.nativeRunner?.client || null;
-      await syncSelectedClaudeProfileFromSandbox(bridged.sandboxId || options.sandboxId || null, nativeClaudeClient).catch((syncError) => {
+      await syncSelectedClaudeProfileFromSandbox(bridged.sandboxId || sandboxId || null, nativeClaudeClient).catch((syncError) => {
         console.warn(`[E2B Bridge] Failed to write back Claude auth after prompt ${sessionId}:`, syncError?.message || syncError);
       });
 
@@ -1125,24 +1284,27 @@ export async function sendMessageToE2BSession(sessionId, message, options = {}) 
   await applyCodexFeatureTogglesToSession(bridged.session, options.featureToggles);
 
   console.log(`[E2B Bridge] Sending message to session ${sessionId}`);
-  persistPromptMessage(sessionId, bridged.agent || options.agent || 'claude', message);
+  persistPromptMessage(sessionId, bridged.agent || agent || 'claude', message);
   updateBridgeActivity(sessionId, true);
   let terminalStatus = 'idle';
   try {
     const emittedBeforePrompt = bridged.emittedCount;
     const meaningfulOutputBeforePrompt = bridged.meaningfulOutputCount;
     const completionBeforePrompt = bridged.completionCount;
-    const promptOnce = () => bridged.session.prompt([{ type: 'text', text: message }]);
+    const promptOnce = () => __internal__runE2BAcpPromptWithTimeout(
+      () => bridged.session.prompt([{ type: 'text', text: message }]),
+      { sessionId },
+    );
     let response;
 
     try {
       response = await promptOnce();
     } catch (error) {
       if (
-        resolveE2BAgentProvider(bridged.agent || options.agent || '') === 'codex' &&
+        resolveE2BAgentProvider(bridged.agent || agent || '') === 'codex' &&
         isAuthenticationRequiredError(error)
       ) {
-        const client = await ensureSandbox(bridged.sandboxId || options.sandboxId || null, {
+        const client = await ensureSandbox(bridged.sandboxId || sandboxId || null, {
           sandboxConnectHost: options.sandboxConnectHost || '',
         });
         const recovered = await ensureCodexLiveAuthenticated(client);
@@ -1160,11 +1322,11 @@ export async function sendMessageToE2BSession(sessionId, message, options = {}) 
     }
 
     if (bridged.meaningfulOutputCount === meaningfulOutputBeforePrompt) {
-      const errorMessage = buildSilentPromptError(bridged.agent || options.agent || '', response);
+      const errorMessage = buildSilentPromptError(bridged.agent || agent || '', response);
       const syntheticError = createNormalizedMessage({
         id: `e2b_empty_output_${Date.now()}`,
         sessionId,
-        provider: resolveE2BAgentProvider(bridged.agent || options.agent || ''),
+        provider: resolveE2BAgentProvider(bridged.agent || agent || ''),
         kind: 'error',
         content: errorMessage,
       });
@@ -1176,20 +1338,20 @@ export async function sendMessageToE2BSession(sessionId, message, options = {}) 
       emitSyntheticComplete(
         bridged,
         sessionId,
-        resolveE2BAgentProvider(bridged.agent || options.agent || ''),
+        resolveE2BAgentProvider(bridged.agent || agent || ''),
       );
     }
   } catch (error) {
     terminalStatus = 'error';
 
-    if (isRecoverableAcpTransportError(error)) {
-      await invalidateSandboxConnection(bridged.sandboxId || options.sandboxId || null, error);
+    if (isRecoverableAcpTransportError(error) || error?.code === 'E2B_ACP_PROMPT_TIMEOUT') {
+      await invalidateSandboxConnection(bridged.sandboxId || sandboxId || null, error);
       disposeBridge(sessionId);
     }
 
     throw withReadableE2BError(error, {
-      agent: bridged.agent || options.agent || '',
-      sandboxId: bridged.sandboxId || options.sandboxId || null,
+      agent: bridged.agent || agent || '',
+      sandboxId: bridged.sandboxId || sandboxId || null,
     });
   } finally {
     if (activeBridgedSessions.has(sessionId)) {
@@ -1207,21 +1369,10 @@ export async function sendMessageToE2BSession(sessionId, message, options = {}) 
  * @returns {Promise<void>}
  */
 export async function respondE2BPermission(sessionId, permissionId, reply) {
-  let bridged = activeBridgedSessions.get(sessionId);
+  const { bridged, sandboxId } = await ensureFreshBridge(sessionId);
 
   if (!bridged) {
-    const sessionRecord = e2bSessionDb.getBySessionId(sessionId);
-    if (!sessionRecord?.sandbox_id) {
-      throw new Error(`No active E2B session: ${sessionId}`);
-    }
-
-    await createE2BSession(sessionId, {
-      agent: sessionRecord.agent || 'claude',
-      model: sessionRecord.model || null,
-      resume: true,
-      sandboxId: sessionRecord.sandbox_id,
-    });
-    bridged = activeBridgedSessions.get(sessionId);
+    throw new Error(`No active E2B session: ${sessionId}`);
   }
 
   if (isNativeClaudeBridgeState(bridged)) {
@@ -1229,7 +1380,7 @@ export async function respondE2BPermission(sessionId, permissionId, reply) {
     return;
   }
 
-  const client = await ensureSandbox(bridged?.sandboxId || null);
+  const client = await ensureSandbox(bridged?.sandboxId || sandboxId || null);
   if (!client) {
     throw new Error('No active E2B sandbox');
   }

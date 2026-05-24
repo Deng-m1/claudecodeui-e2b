@@ -12,7 +12,7 @@ import { useSessionStore } from '../../../stores/useSessionStore';
 import ChatMessagesPane from './subcomponents/ChatMessagesPane';
 import ChatComposer from './subcomponents/ChatComposer';
 import { getPendingViewSessionId, type PendingViewSession } from '../utils/pendingSession';
-import { resolveEffectiveRuntimeMode } from '../../../utils/sessionSelection';
+import { resolveEffectiveRuntimeMode, resolveSessionRuntime } from '../../../utils/sessionSelection';
 
 function ChatInterface({
   selectedProject,
@@ -81,6 +81,7 @@ function ChatInterface({
   });
 
   const effectiveRuntimeMode = resolveEffectiveRuntimeMode(selectedProject, selectedSession, runtimeMode);
+  const selectedSessionRuntime = selectedSession ? resolveSessionRuntime(selectedSession) : null;
 
   const {
     chatMessages,
@@ -224,7 +225,7 @@ function ChatInterface({
       return;
     }
 
-    const transportProvider = selectedSession.__runtime === 'e2b'
+    const transportProvider = selectedSessionRuntime === 'e2b'
       ? 'e2b'
       : (selectedSession.__provider || 'claude') as SessionProvider;
 
@@ -246,12 +247,10 @@ function ChatInterface({
       projectName: selectedSession.__projectName || selectedProject.name,
       projectPath: selectedSession.__projectPath || selectedProject.cloud?.workspacePath || selectedProject.fullPath || selectedProject.path || '',
     });
-
-    if (!processingSessions?.has(selectedSession.id)) {
-      setIsLoading(false);
-      setCanAbortSession(false);
-    }
-  }, [processingSessions, selectedProject, selectedSession, sendMessage, sessionStore, setCanAbortSession, setIsLoading]);
+    // Do not optimistically clear the processing banner here.
+    // `check-session-status` is the authoritative source after reconnect/recovery,
+    // and clearing too early causes a visible processing -> idle -> processing flicker.
+  }, [selectedProject, selectedSession, selectedSessionRuntime, sendMessage, sessionStore]);
 
   // On WebSocket reconnect, re-bind the active session writer and re-fetch the current
   // session history so missed updates are recovered after mobile/background resumes.
@@ -264,7 +263,7 @@ function ChatInterface({
       return;
     }
 
-    if (selectedSession.__runtime !== 'e2b' || selectedSession.status !== 'active') {
+    if (selectedSessionRuntime !== 'e2b' || selectedSession.status !== 'active') {
       return;
     }
 
@@ -303,7 +302,7 @@ function ChatInterface({
   }, [
     resyncSelectedSession,
     selectedProject,
-    selectedSession?.__runtime,
+    selectedSessionRuntime,
     selectedSession?.id,
     selectedSession?.status,
   ]);

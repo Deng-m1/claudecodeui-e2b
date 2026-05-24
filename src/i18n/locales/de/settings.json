@@ -106,7 +106,8 @@
     "apiTokens": "API & Token",
     "authCenter": "Auth Center",
     "tasks": "Aufgaben",
-    "plugins": "Plugins"
+    "plugins": "Plugins",
+    "remoteHosts": "Remote Hosts"
   },
   "authCenter": {
     "title": "Auth Center",

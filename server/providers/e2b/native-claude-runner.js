@@ -2,6 +2,7 @@ import { WebSocket } from 'ws';
 import { createNormalizedMessage } from '../types.js';
 import { claudeAdapter } from '../claude/adapter.js';
 import { ensureNativeCliInstalled } from './sandbox-manager.js';
+import { stringifyE2BError } from './error-format.js';
 
 const DEFAULT_PROCESS_CWD = '/home/user';
 const TERMINAL_ENV = {
@@ -49,7 +50,7 @@ function buildPermissionDecision(reply, request = {}) {
 
 function buildResultErrorText(frame) {
   const errors = Array.isArray(frame?.errors)
-    ? frame.errors.filter((value) => typeof value === 'string' && value.trim())
+    ? frame.errors.map((value) => stringifyE2BError(value)).filter(Boolean)
     : [];
   const stopReason = normalizeNonEmptyString(frame?.stop_reason);
 
@@ -62,6 +63,20 @@ function buildResultErrorText(frame) {
   }
 
   return 'Claude Code failed inside the E2B sandbox.';
+}
+
+function buildClaudeFrameErrorText(error, fallback = 'Claude Code reported an error.') {
+  const text = stringifyE2BError(error);
+  if (!text) {
+    return fallback;
+  }
+
+  const normalized = text.replace(/\.+$/, '');
+  if (/^claude code\b/i.test(normalized)) {
+    return normalized;
+  }
+
+  return `Claude Code reported ${normalized}.`;
 }
 
 function buildFallbackAssistantMessages(frame, sessionId) {
@@ -414,7 +429,7 @@ export class NativeClaudeE2BRunner {
             sessionId: this.sessionId,
             provider: 'claude',
             kind: 'error',
-            content: `Claude Code reported ${frame.error}.`,
+            content: buildClaudeFrameErrorText(frame.error),
           }),
         );
       }
@@ -550,7 +565,7 @@ export class NativeClaudeE2BRunner {
           sessionId: this.sessionId,
           provider: 'claude',
           kind: 'error',
-          content: normalizeNonEmptyString(frame.error) || 'Claude Code authentication failed.',
+          content: stringifyE2BError(frame.error, 'Claude Code authentication failed.'),
         }),
       );
       return;

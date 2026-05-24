@@ -1,4 +1,7 @@
 import { getProvider } from '../../providers/registry.js';
+import { remoteHostSessionMessagesDb, remoteHostSessionsDb } from '../../database/db.js';
+import { isRemoteHostProjectName } from '../../providers/remote-host/project-utils.js';
+import { loadRemoteHostSessionHistorySnapshot } from '../../providers/remote-host/native-sessions.js';
 
 const MAX_CACHED_HISTORIES = 100;
 const cache = new Map();
@@ -66,6 +69,64 @@ function computeSnapshotFingerprint(messages = [], tokenUsage = null) {
   const head = length > 0 ? getMessageSignature(messages[0]) : 'head:none';
   const tail = length > 0 ? getMessageSignature(messages[length - 1]) : 'tail:none';
   return `${length}:${head}:${tail}:${stableJson(tokenUsage)}`;
+}
+
+function parsePersistedRemoteMessages(rows = []) {
+  return rows
+    .map((row) => {
+      try {
+        return JSON.parse(row.message_json);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+function normalizeSortTimestamp(value) {
+  const numeric = Date.parse(String(value || ''));
+  return Number.isFinite(numeric) ? numeric : Number.POSITIVE_INFINITY;
+}
+
+function mergeRemoteHostHistoryMessages(remoteMessages = [], localMessages = []) {
+  const seenSignatures = new Set();
+  const combined = [];
+  const addMessages = (messages, source) => {
+    for (const message of messages) {
+      if (!message || typeof message !== 'object') {
+        continue;
+      }
+
+      const signature = getMessageSignature(message);
+      if (seenSignatures.has(signature)) {
+        continue;
+      }
+
+      seenSignatures.add(signature);
+      combined.push({
+        message,
+        source,
+        timestamp: normalizeSortTimestamp(message.timestamp),
+      });
+    }
+  };
+
+  addMessages(remoteMessages, 'remote');
+  addMessages(localMessages, 'local');
+
+  combined.sort((left, right) => {
+    if (left.timestamp !== right.timestamp) {
+      return left.timestamp - right.timestamp;
+    }
+
+    if (left.source !== right.source) {
+      return left.source === 'remote' ? -1 : 1;
+    }
+
+    return 0;
+  });
+
+  return combined.map((entry) => entry.message);
 }
 
 function touchEntry(key, entry) {
@@ -147,6 +208,41 @@ function assignSequences(messages = [], existingEntry = null) {
 }
 
 async function loadAdapterSnapshot(providerName, adapter, sessionId, opts) {
+  if (isRemoteHostProjectName(opts?.projectName || '') || remoteHostSessionsDb.getBySessionId(sessionId)) {
+    const rows = typeof opts?.__remoteMessageRows === 'function'
+      ? opts.__remoteMessageRows(sessionId)
+      : remoteHostSessionMessagesDb.getBySessionId(sessionId);
+    const localMessages = parsePersistedRemoteMessages(rows);
+    const remoteHistoryLoader = typeof opts?.__remoteHistoryLoader === 'function'
+      ? opts.__remoteHistoryLoader
+      : loadRemoteHostSessionHistorySnapshot;
+
+    let remoteSnapshot = null;
+    try {
+      remoteSnapshot = await remoteHistoryLoader(sessionId, {
+        provider: providerName,
+        projectName: String(opts?.projectName || ''),
+        userId: opts?.userId || null,
+      });
+    } catch (error) {
+      if (localMessages.length === 0) {
+        throw error;
+      }
+
+      console.warn(`[SessionHistory] Falling back to persisted local remote-host messages for ${sessionId}:`, error.message);
+    }
+
+    const remoteMessages = Array.isArray(remoteSnapshot?.messages) ? remoteSnapshot.messages : [];
+    const messages = mergeRemoteHostHistoryMessages(remoteMessages, localMessages);
+    const tokenUsage = remoteSnapshot?.tokenUsage || null;
+
+    return {
+      messages,
+      tokenUsage,
+      fingerprint: remoteSnapshot?.fingerprint || computeSnapshotFingerprint(messages, tokenUsage),
+    };
+  }
+
   if (adapter && typeof adapter.loadHistorySnapshot === 'function') {
     return adapter.loadHistorySnapshot(sessionId, opts);
   }

@@ -21,11 +21,13 @@ type PillProps = {
   onClick: () => void;
   children: ReactNode;
   className?: string;
+  'data-testid'?: string;
 };
 
-export function Pill({ isActive, onClick, children, className }: PillProps) {
+export function Pill({ isActive, onClick, children, className, 'data-testid': dataTestId }: PillProps) {
   return (
     <button
+      data-testid={dataTestId}
       onClick={onClick}
       className={cn(
         'flex touch-manipulation items-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-all duration-150',

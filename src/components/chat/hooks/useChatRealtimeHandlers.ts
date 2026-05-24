@@ -102,6 +102,7 @@ export function useChatRealtimeHandlers({
   onWebSocketReconnect,
   sessionStore,
 }: UseChatRealtimeHandlersArgs) {
+  const SESSION_STATUS_FALSE_GRACE_MS = 15_000;
   const lastProcessedMessageSequenceRef = useRef(0);
   const streamStatesRef = useRef<Map<string, {
     accumulated: string;
@@ -161,6 +162,46 @@ export function useChatRealtimeHandlers({
       lastProjectRefreshAtRef.current = Date.now();
       void window.refreshProjects?.();
     }, effectiveDelay);
+  };
+
+  const claimPendingSessionView = (sessionId: string | null) => {
+    if (!sessionId || selectedSession?.id) {
+      return false;
+    }
+
+    const hasPendingBootstrap =
+      Boolean(pendingViewSessionRef.current) ||
+      (typeof window !== 'undefined' && Boolean(sessionStorage.getItem('pendingSessionId')));
+
+    if (!hasPendingBootstrap) {
+      return false;
+    }
+
+    const knownPendingSessionId = getPendingViewSessionId(currentSessionId, pendingViewSessionRef.current);
+    if (
+      knownPendingSessionId &&
+      knownPendingSessionId !== sessionId &&
+      !knownPendingSessionId.startsWith('new-session-')
+    ) {
+      return false;
+    }
+
+    if (pendingViewSessionRef.current) {
+      pendingViewSessionRef.current.sessionId = sessionId;
+    }
+
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem('pendingSessionId', sessionId);
+    }
+
+    if (!currentSessionId || currentSessionId.startsWith('new-session-')) {
+      setCurrentSessionId(sessionId);
+      onReplaceTemporarySession?.(sessionId);
+    }
+
+    onNavigateToSession?.(sessionId);
+    scheduleProjectRefresh();
+    return true;
   };
 
   useEffect(() => {
@@ -278,7 +319,8 @@ export function useChatRealtimeHandlers({
             statusSessionId === currentSessionId || (selectedSession && statusSessionId === selectedSession.id);
 
           const status = msg.status;
-          const wasRecentlyActivated = wasSessionMarkedProcessingRecently?.(statusSessionId, 2_500) ?? false;
+          const wasRecentlyActivated =
+            wasSessionMarkedProcessingRecently?.(statusSessionId, SESSION_STATUS_FALSE_GRACE_MS) ?? false;
           const wasRecentlyTerminal = wasRecentlyCompleted(statusSessionId);
 
           if (status) {
@@ -343,6 +385,10 @@ export function useChatRealtimeHandlers({
         selectedProject?.path ||
         '';
       const isActiveSession = Boolean(sid && activeViewSessionId && sid === activeViewSessionId);
+
+      if (sid) {
+        claimPendingSessionView(sid);
+      }
 
       const flushStreamingSession = (sessionId: string, finalize = false) => {
         const state = streamStatesRef.current.get(sessionId);
@@ -414,22 +460,24 @@ export function useChatRealtimeHandlers({
           const newSessionId = msg.newSessionId;
           if (!newSessionId) break;
 
-        if (!currentSessionId || currentSessionId.startsWith('new-session-')) {
-          sessionStorage.setItem('pendingSessionId', newSessionId);
-          if (pendingViewSessionRef.current && !pendingViewSessionRef.current.sessionId) {
-            pendingViewSessionRef.current.sessionId = newSessionId;
+          if (!currentSessionId || currentSessionId.startsWith('new-session-')) {
+            if (typeof window !== 'undefined') {
+              sessionStorage.setItem('pendingSessionId', newSessionId);
+            }
+            if (pendingViewSessionRef.current && !pendingViewSessionRef.current.sessionId) {
+              pendingViewSessionRef.current.sessionId = newSessionId;
+            }
+            setCurrentSessionId(newSessionId);
+            onReplaceTemporarySession?.(newSessionId);
+            setPendingPermissionRequests((prev) =>
+              prev.map((r) => (r.sessionId ? r : { ...r, sessionId: newSessionId })),
+            );
           }
-          setCurrentSessionId(newSessionId);
-          onReplaceTemporarySession?.(newSessionId);
-          setPendingPermissionRequests((prev) =>
-            prev.map((r) => (r.sessionId ? r : { ...r, sessionId: newSessionId })),
-          );
+          markSessionActive(newSessionId);
+          onNavigateToSession?.(newSessionId);
+          scheduleProjectRefresh();
+          break;
         }
-        markSessionActive(newSessionId);
-        onNavigateToSession?.(newSessionId);
-        scheduleProjectRefresh();
-        break;
-      }
 
       case 'complete': {
         if (sid) {

@@ -195,7 +195,16 @@
       "hint": "代理在远程 E2B 云端沙箱中运行，支持完整的 git 操作",
       "loading": "加载中...",
       "noRepos": "未找到仓库"
+    },
+    "remoteHost": {
+      "title": "远程主机项目",
+      "start": "远程主机会话",
+      "description": "聊天会直接运行远程主机自己的 Claude 或 Codex CLI，并使用远程机器原生的 session 文件进行 resume。"
     }
+  },
+  "remoteHost": {
+    "unsupportedProvider": "远程主机聊天当前仅支持 Claude 和 Codex。其他 CLI 请使用 Shell 标签页。",
+    "runningStatus": "正在远程主机上运行"
   },
   "session": {
     "continue": {

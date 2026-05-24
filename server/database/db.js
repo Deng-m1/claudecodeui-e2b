@@ -4,6 +4,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import { resolveWritableDatabasePath } from './path.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -22,22 +23,28 @@ const c = {
     dim: (text) => `${colors.dim}${text}${colors.reset}`,
 };
 
-// Use DATABASE_PATH environment variable if set, otherwise use default location
-const DB_PATH = process.env.DATABASE_PATH || path.join(__dirname, 'auth.db');
+const resolvedDatabasePath = resolveWritableDatabasePath();
+const DB_PATH = resolvedDatabasePath.path;
 const INIT_SQL_PATH = path.join(__dirname, 'init.sql');
 
-// Ensure database directory exists if custom path is provided
-if (process.env.DATABASE_PATH) {
-  const dbDir = path.dirname(DB_PATH);
-  try {
-    if (!fs.existsSync(dbDir)) {
-      fs.mkdirSync(dbDir, { recursive: true });
-      console.log(`Created database directory: ${dbDir}`);
-    }
-  } catch (error) {
-    console.error(`Failed to create database directory ${dbDir}:`, error.message);
-    throw error;
+if (resolvedDatabasePath.fallbackUsed) {
+  console.warn(
+    `[WARN] Database path ${resolvedDatabasePath.preferredPath} (${resolvedDatabasePath.preferredLabel}) is not writable. Falling back to ${DB_PATH}.`
+  );
+}
+
+process.env.DATABASE_PATH = DB_PATH;
+
+// Ensure database directory exists before opening SQLite
+const dbDir = path.dirname(DB_PATH);
+try {
+  if (!fs.existsSync(dbDir)) {
+    fs.mkdirSync(dbDir, { recursive: true });
+    console.log(`Created database directory: ${dbDir}`);
   }
+} catch (error) {
+  console.error(`Failed to create database directory ${dbDir}:`, error.message);
+  throw error;
 }
 
 // As part of 1.19.2 we are introducing a new location for auth.db. The below handles exisitng moving legacy database from install directory to new location
@@ -74,8 +81,11 @@ console.log('');
 console.log(c.dim('═'.repeat(60)));
 console.log(`${c.info('[INFO]')} App Installation: ${c.bright(appInstallPath)}`);
 console.log(`${c.info('[INFO]')} Database: ${c.dim(path.relative(appInstallPath, DB_PATH))}`);
-if (process.env.DATABASE_PATH) {
+if (resolvedDatabasePath.configuredPath) {
   console.log(`       ${c.dim('(Using custom DATABASE_PATH from environment)')}`);
+}
+if (resolvedDatabasePath.fallbackUsed) {
+  console.log(`       ${c.dim(`(Fallback from ${resolvedDatabasePath.preferredLabel})`)}`);
 }
 console.log(c.dim('═'.repeat(60)));
 console.log('');
@@ -221,6 +231,101 @@ const runMigrations = () => {
     db.exec('CREATE INDEX IF NOT EXISTS idx_auth_profiles_provider ON auth_profiles(provider)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_auth_profiles_user_provider ON auth_profiles(user_id, provider)');
 
+    db.exec(`CREATE TABLE IF NOT EXISTS remote_hosts (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      label TEXT NOT NULL,
+      host TEXT NOT NULL,
+      port INTEGER NOT NULL DEFAULT 22,
+      username TEXT,
+      connection_mode TEXT NOT NULL,
+      auth_method TEXT,
+      agent_url TEXT,
+      agent_token TEXT,
+      managed_ssh_private_key TEXT,
+      managed_ssh_public_key TEXT,
+      saved_ssh_password TEXT,
+      status TEXT NOT NULL DEFAULT 'unknown',
+      last_error TEXT,
+      last_tested_at DATETIME,
+      metadata_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )`);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_remote_hosts_user_id ON remote_hosts(user_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_remote_hosts_status ON remote_hosts(status)');
+
+    const remoteHostsTableInfo = db.prepare("PRAGMA table_info(remote_hosts)").all();
+    const remoteHostsColumnNames = remoteHostsTableInfo.map((column) => column.name);
+    if (!remoteHostsColumnNames.includes('agent_token')) {
+      console.log('Running migration: Adding agent_token column to remote_hosts');
+      db.exec('ALTER TABLE remote_hosts ADD COLUMN agent_token TEXT');
+    }
+    if (!remoteHostsColumnNames.includes('managed_ssh_private_key')) {
+      console.log('Running migration: Adding managed_ssh_private_key column to remote_hosts');
+      db.exec('ALTER TABLE remote_hosts ADD COLUMN managed_ssh_private_key TEXT');
+    }
+    if (!remoteHostsColumnNames.includes('managed_ssh_public_key')) {
+      console.log('Running migration: Adding managed_ssh_public_key column to remote_hosts');
+      db.exec('ALTER TABLE remote_hosts ADD COLUMN managed_ssh_public_key TEXT');
+    }
+    if (!remoteHostsColumnNames.includes('saved_ssh_password')) {
+      console.log('Running migration: Adding saved_ssh_password column to remote_hosts');
+      db.exec('ALTER TABLE remote_hosts ADD COLUMN saved_ssh_password TEXT');
+    }
+
+    db.exec(`CREATE TABLE IF NOT EXISTS remote_workspaces (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      remote_host_id TEXT NOT NULL,
+      display_name TEXT,
+      workspace_root TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT \'registered\',
+      metadata_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (remote_host_id) REFERENCES remote_hosts(id) ON DELETE CASCADE,
+      UNIQUE (user_id, remote_host_id, workspace_root)
+    )`);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_remote_workspaces_user_id ON remote_workspaces(user_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_remote_workspaces_host_id ON remote_workspaces(remote_host_id)');
+
+    db.exec(`CREATE TABLE IF NOT EXISTS remote_host_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      remote_host_id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      session_id TEXT NOT NULL UNIQUE,
+      provider TEXT NOT NULL,
+      model TEXT,
+      summary TEXT,
+      status TEXT DEFAULT 'active',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_activity DATETIME DEFAULT CURRENT_TIMESTAMP,
+      metadata_json TEXT,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (remote_host_id) REFERENCES remote_hosts(id) ON DELETE CASCADE,
+      FOREIGN KEY (workspace_id) REFERENCES remote_workspaces(id) ON DELETE CASCADE
+    )`);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_remote_host_sessions_user_id ON remote_host_sessions(user_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_remote_host_sessions_host_id ON remote_host_sessions(remote_host_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_remote_host_sessions_workspace_id ON remote_host_sessions(workspace_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_remote_host_sessions_provider ON remote_host_sessions(provider)');
+
+    db.exec(`CREATE TABLE IF NOT EXISTS remote_host_session_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      timestamp TEXT,
+      message_json TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(session_id, message_id)
+    )`);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_remote_host_session_messages_session_id ON remote_host_session_messages(session_id, id)');
+
     console.log('Database migrations completed successfully');
   } catch (error) {
     console.error('Error running migrations:', error.message);
@@ -257,6 +362,78 @@ function normalizeE2BRowTimestamps(row) {
 }
 
 function normalizeE2BMessageRow(row) {
+  if (!row || typeof row !== 'object') {
+    return row;
+  }
+
+  return {
+    ...row,
+    created_at: normalizeSqliteUtcTimestamp(row.created_at),
+  };
+}
+
+function parseJsonOrNull(value) {
+  if (!value || typeof value !== 'string') {
+    return null;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeRemoteHostRow(row) {
+  if (!row || typeof row !== 'object') {
+    return row;
+  }
+
+  return {
+    ...row,
+    port: typeof row.port === 'number' ? row.port : Number(row.port || 22),
+    metadata_json: undefined,
+    metadata: parseJsonOrNull(row.metadata_json),
+    agent_token: typeof row.agent_token === 'string' ? row.agent_token : null,
+    managed_ssh_private_key: typeof row.managed_ssh_private_key === 'string' ? row.managed_ssh_private_key : null,
+    managed_ssh_public_key: typeof row.managed_ssh_public_key === 'string' ? row.managed_ssh_public_key : null,
+    saved_ssh_password: typeof row.saved_ssh_password === 'string' ? row.saved_ssh_password : null,
+    created_at: normalizeSqliteUtcTimestamp(row.created_at),
+    updated_at: normalizeSqliteUtcTimestamp(row.updated_at),
+    last_tested_at: normalizeSqliteUtcTimestamp(row.last_tested_at),
+  };
+}
+
+function normalizeRemoteWorkspaceRow(row) {
+  if (!row || typeof row !== 'object') {
+    return row;
+  }
+
+  return {
+    ...row,
+    metadata_json: undefined,
+    metadata: parseJsonOrNull(row.metadata_json),
+    created_at: normalizeSqliteUtcTimestamp(row.created_at),
+    updated_at: normalizeSqliteUtcTimestamp(row.updated_at),
+  };
+}
+
+function normalizeRemoteHostSessionRow(row) {
+  if (!row || typeof row !== 'object') {
+    return row;
+  }
+
+  return {
+    ...row,
+    metadata_json: undefined,
+    metadata: parseJsonOrNull(row.metadata_json),
+    created_at: normalizeSqliteUtcTimestamp(row.created_at),
+    updated_at: normalizeSqliteUtcTimestamp(row.updated_at),
+    last_activity: normalizeSqliteUtcTimestamp(row.last_activity),
+  };
+}
+
+function normalizeRemoteHostMessageRow(row) {
   if (!row || typeof row !== 'object') {
     return row;
   }
@@ -1139,6 +1316,403 @@ const e2bSessionMessagesDb = {
   },
 };
 
+const remoteHostsDb = {
+  create: (
+    userId,
+    {
+      id = crypto.randomUUID(),
+      label,
+      host,
+      port = 22,
+      username = null,
+      connectionMode,
+      authMethod = null,
+      agentUrl = null,
+      agentToken = null,
+      managedSshPrivateKey = null,
+      managedSshPublicKey = null,
+      savedSshPassword = null,
+      status = 'unknown',
+      lastError = null,
+      lastTestedAt = null,
+      metadata = null,
+    } = {},
+  ) => {
+    db.prepare(`
+      INSERT INTO remote_hosts (
+        id,
+        user_id,
+        label,
+        host,
+        port,
+        username,
+        connection_mode,
+        auth_method,
+        agent_url,
+        agent_token,
+        managed_ssh_private_key,
+        managed_ssh_public_key,
+        saved_ssh_password,
+        status,
+        last_error,
+        last_tested_at,
+        metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      userId,
+      label,
+      host,
+      port,
+      username,
+      connectionMode,
+      authMethod,
+      agentUrl,
+      agentToken,
+      managedSshPrivateKey,
+      managedSshPublicKey,
+      savedSshPassword,
+      status,
+      lastError,
+      lastTestedAt,
+      metadata ? JSON.stringify(metadata) : null,
+    );
+
+    return remoteHostsDb.getById(userId, id);
+  },
+
+  getByUser: (userId) => {
+    return db.prepare(`
+      SELECT *
+      FROM remote_hosts
+      WHERE user_id = ?
+      ORDER BY updated_at DESC, created_at DESC
+    `).all(userId).map(normalizeRemoteHostRow);
+  },
+
+  getById: (userId, id) => {
+    return normalizeRemoteHostRow(
+      db.prepare(`
+        SELECT *
+        FROM remote_hosts
+        WHERE user_id = ? AND id = ?
+      `).get(userId, id),
+    );
+  },
+
+  updateStatus: (userId, id, { status, lastError = null, lastTestedAt = null } = {}) => {
+    const result = db.prepare(`
+      UPDATE remote_hosts
+      SET
+        status = ?,
+        last_error = ?,
+        last_tested_at = ?,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE user_id = ? AND id = ?
+    `).run(status, lastError, lastTestedAt, userId, id);
+
+    return result.changes > 0 ? remoteHostsDb.getById(userId, id) : null;
+  },
+
+  updateConnection: (
+    userId,
+    id,
+    {
+      agentUrl = null,
+      agentToken = undefined,
+      managedSshPrivateKey = undefined,
+      managedSshPublicKey = undefined,
+      savedSshPassword = undefined,
+      status = null,
+      lastError = null,
+      lastTestedAt = null,
+      metadata = undefined,
+    } = {},
+  ) => {
+    const current = remoteHostsDb.getById(userId, id);
+    if (!current) {
+      return null;
+    }
+
+    const result = db.prepare(`
+      UPDATE remote_hosts
+      SET
+        agent_url = ?,
+        agent_token = ?,
+        managed_ssh_private_key = ?,
+        managed_ssh_public_key = ?,
+        saved_ssh_password = ?,
+        status = COALESCE(?, status),
+        last_error = ?,
+        last_tested_at = COALESCE(?, last_tested_at),
+        metadata_json = ?,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE user_id = ? AND id = ?
+    `).run(
+      agentUrl,
+      agentToken === undefined ? current.agent_token : agentToken,
+      managedSshPrivateKey === undefined ? current.managed_ssh_private_key : managedSshPrivateKey,
+      managedSshPublicKey === undefined ? current.managed_ssh_public_key : managedSshPublicKey,
+      savedSshPassword === undefined ? current.saved_ssh_password : savedSshPassword,
+      status,
+      lastError,
+      lastTestedAt,
+      metadata === undefined
+        ? (current.metadata ? JSON.stringify(current.metadata) : null)
+        : (metadata ? JSON.stringify(metadata) : null),
+      userId,
+      id,
+    );
+
+    return result.changes > 0 ? remoteHostsDb.getById(userId, id) : null;
+  },
+
+  delete: (userId, id) => {
+    const result = db.prepare(`
+      DELETE FROM remote_hosts
+      WHERE user_id = ? AND id = ?
+    `).run(userId, id);
+
+    return result.changes > 0;
+  },
+};
+
+const remoteWorkspacesDb = {
+  create: (
+    userId,
+    {
+      id = crypto.randomUUID(),
+      remoteHostId,
+      displayName = null,
+      workspaceRoot,
+      status = 'registered',
+      metadata = null,
+    } = {},
+  ) => {
+    db.prepare(`
+      INSERT INTO remote_workspaces (
+        id,
+        user_id,
+        remote_host_id,
+        display_name,
+        workspace_root,
+        status,
+        metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      userId,
+      remoteHostId,
+      displayName,
+      workspaceRoot,
+      status,
+      metadata ? JSON.stringify(metadata) : null,
+    );
+
+    return remoteWorkspacesDb.getById(userId, id);
+  },
+
+  getByUser: (userId) => {
+    return db.prepare(`
+      SELECT *
+      FROM remote_workspaces
+      WHERE user_id = ?
+      ORDER BY updated_at DESC, created_at DESC
+    `).all(userId).map(normalizeRemoteWorkspaceRow);
+  },
+
+  getByHost: (userId, remoteHostId) => {
+    return db.prepare(`
+      SELECT *
+      FROM remote_workspaces
+      WHERE user_id = ? AND remote_host_id = ?
+      ORDER BY updated_at DESC, created_at DESC
+    `).all(userId, remoteHostId).map(normalizeRemoteWorkspaceRow);
+  },
+
+  getById: (userId, id) => {
+    return normalizeRemoteWorkspaceRow(
+      db.prepare(`
+        SELECT *
+        FROM remote_workspaces
+        WHERE user_id = ? AND id = ?
+      `).get(userId, id),
+    );
+  },
+
+  delete: (userId, id) => {
+    const result = db.prepare(`
+      DELETE FROM remote_workspaces
+      WHERE user_id = ? AND id = ?
+    `).run(userId, id);
+
+    return result.changes > 0;
+  },
+};
+
+const REMOTE_HOST_SESSION_SELECT_WITH_MESSAGE_COUNTS = `
+      SELECT
+        remote_host_sessions.*,
+        COALESCE(message_counts.message_count, 0) AS message_count
+      FROM remote_host_sessions
+      LEFT JOIN (
+        SELECT session_id, COUNT(*) AS message_count
+        FROM remote_host_session_messages
+        GROUP BY session_id
+      ) AS message_counts
+        ON message_counts.session_id = remote_host_sessions.session_id
+    `;
+
+const remoteHostSessionsDb = {
+  upsert: (
+    userId,
+    sessionId,
+    {
+      remoteHostId,
+      workspaceId,
+      provider,
+      model = null,
+      summary = null,
+      status = 'active',
+      metadata = null,
+    } = {},
+  ) => {
+    db.prepare(`
+      INSERT INTO remote_host_sessions (
+        user_id,
+        remote_host_id,
+        workspace_id,
+        session_id,
+        provider,
+        model,
+        summary,
+        status,
+        metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET
+        user_id = excluded.user_id,
+        remote_host_id = COALESCE(excluded.remote_host_id, remote_host_sessions.remote_host_id),
+        workspace_id = COALESCE(excluded.workspace_id, remote_host_sessions.workspace_id),
+        provider = COALESCE(excluded.provider, remote_host_sessions.provider),
+        model = COALESCE(excluded.model, remote_host_sessions.model),
+        summary = COALESCE(excluded.summary, remote_host_sessions.summary),
+        status = COALESCE(excluded.status, remote_host_sessions.status),
+        metadata_json = COALESCE(excluded.metadata_json, remote_host_sessions.metadata_json),
+        last_activity = CURRENT_TIMESTAMP
+    `).run(
+      userId,
+      remoteHostId,
+      workspaceId,
+      sessionId,
+      provider,
+      model,
+      summary,
+      status,
+      metadata ? JSON.stringify(metadata) : null,
+    );
+  },
+
+  touch: (sessionId, { summary = null, model = null, status = null, metadata = null } = {}) => {
+    db.prepare(`
+      UPDATE remote_host_sessions
+      SET
+        summary = COALESCE(?, summary),
+        model = COALESCE(?, model),
+        status = COALESCE(?, status),
+        metadata_json = COALESCE(?, metadata_json),
+        last_activity = CURRENT_TIMESTAMP
+      WHERE session_id = ?
+    `).run(
+      summary,
+      model,
+      status,
+      metadata ? JSON.stringify(metadata) : null,
+      sessionId,
+    );
+  },
+
+  getBySessionId: (sessionId) => {
+    return normalizeRemoteHostSessionRow(
+      db.prepare(`
+        ${REMOTE_HOST_SESSION_SELECT_WITH_MESSAGE_COUNTS}
+        WHERE remote_host_sessions.session_id = ?
+      `).get(sessionId),
+    );
+  },
+
+  getByWorkspace: (userId, workspaceId) => {
+    return db.prepare(`
+      ${REMOTE_HOST_SESSION_SELECT_WITH_MESSAGE_COUNTS}
+      WHERE remote_host_sessions.user_id = ? AND remote_host_sessions.workspace_id = ?
+      ORDER BY remote_host_sessions.last_activity DESC
+    `).all(userId, workspaceId).map(normalizeRemoteHostSessionRow);
+  },
+
+  getByUser: (userId) => {
+    return db.prepare(`
+      ${REMOTE_HOST_SESSION_SELECT_WITH_MESSAGE_COUNTS}
+      WHERE remote_host_sessions.user_id = ?
+      ORDER BY remote_host_sessions.last_activity DESC
+    `).all(userId).map(normalizeRemoteHostSessionRow);
+  },
+
+  delete: (sessionId) => {
+    db.prepare('DELETE FROM remote_host_sessions WHERE session_id = ?').run(sessionId);
+  },
+
+  deleteByWorkspace: (workspaceId) => {
+    db.prepare('DELETE FROM remote_host_sessions WHERE workspace_id = ?').run(workspaceId);
+  },
+};
+
+const remoteHostSessionMessagesDb = {
+  append: (sessionId, message) => {
+    if (!sessionId || !message?.id || !message?.kind) {
+      return;
+    }
+
+    db.prepare(`
+      INSERT OR IGNORE INTO remote_host_session_messages (
+        session_id,
+        message_id,
+        kind,
+        timestamp,
+        message_json
+      ) VALUES (?, ?, ?, ?, ?)
+    `).run(
+      sessionId,
+      String(message.id),
+      String(message.kind),
+      typeof message.timestamp === 'string' ? message.timestamp : null,
+      JSON.stringify(message),
+    );
+  },
+
+  getBySessionId: (sessionId) => {
+    return db.prepare(`
+      SELECT *
+      FROM remote_host_session_messages
+      WHERE session_id = ?
+      ORDER BY id ASC
+    `).all(sessionId).map(normalizeRemoteHostMessageRow);
+  },
+
+  deleteBySessionId: (sessionId) => {
+    db.prepare('DELETE FROM remote_host_session_messages WHERE session_id = ?').run(sessionId);
+  },
+
+  deleteByWorkspace: (workspaceId) => {
+    db.prepare(`
+      DELETE FROM remote_host_session_messages
+      WHERE session_id IN (
+        SELECT session_id
+        FROM remote_host_sessions
+        WHERE workspace_id = ?
+      )
+    `).run(workspaceId);
+  },
+};
+
 export {
   db,
   initializeDatabase,
@@ -1153,6 +1727,10 @@ export {
   appConfigDb,
   githubTokensDb,
   authProfilesDb,
+  remoteHostsDb,
+  remoteWorkspacesDb,
+  remoteHostSessionsDb,
+  remoteHostSessionMessagesDb,
   e2bSandboxDb,
   e2bSessionDb,
   e2bSessionMessagesDb,

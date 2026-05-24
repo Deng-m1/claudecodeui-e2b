@@ -108,7 +108,8 @@
     "tasks": "Tasks",
     "notifications": "Notifications",
     "plugins": "Plugins",
-    "e2b": "E2B Cloud"
+    "e2b": "E2B Cloud",
+    "remoteHosts": "Remote Hosts"
   },
   "authCenter": {
     "title": "Auth Center",
@@ -693,5 +694,144 @@
     "loadingRepos": "Loading repositories...",
     "noRepos": "No repositories found",
     "branch": "Branch:"
+  },
+  "remoteHosts": {
+    "title": "Remote Hosts",
+    "description": "Register remote machines and workspace roots for the remote-host runtime. Remote Claude, Codex, shell, version, auth, and resume behavior come from the remote machine itself.",
+    "shared": {
+      "never": "Never",
+      "userFallback": "user",
+      "hostFallback": "host",
+      "homeUnavailable": "HOME unavailable",
+      "shellUnavailable": "unknown shell",
+      "systemUnavailable": "OS unavailable",
+      "unavailable": "Unavailable",
+      "unknown": "unknown"
+    },
+    "status": {
+      "reachable": "reachable",
+      "online": "online",
+      "bootstrapped": "bootstrapped",
+      "unreachable": "unreachable",
+      "offline": "offline",
+      "error": "error",
+      "unknown": "unknown"
+    },
+    "form": {
+      "title": "Add Remote Host",
+      "description": "Choose SSH bootstrap for a VS Code Remote SSH style first connection, or register an existing remote agent endpoint.",
+      "label": "Label",
+      "labelPlaceholder": "prod-api-host",
+      "workspaceRoot": "Workspace Root",
+      "connectionMode": "Connection Method",
+      "host": "Host / IP",
+      "hostPlaceholder": "host.example.com",
+      "port": "Port",
+      "username": "SSH Username",
+      "authMethod": "Auth Method",
+      "passwordOption": "SSH Password",
+      "privateKeyOption": "SSH Private Key",
+      "password": "SSH Password",
+      "passwordPlaceholder": "Used for initial bootstrap and managed-key install",
+      "savePasswordFallback": "Save password as fallback",
+      "savePasswordFallbackHint": "Default off. The platform still installs a managed SSH key. Enable this only if you want password fallback after agent and managed-key access both fail.",
+      "privateKey": "SSH Private Key",
+      "privateKeyPlaceholder": "Paste the PEM key used for bootstrap.",
+      "passphrase": "Passphrase",
+      "passphrasePlaceholder": "Optional private key passphrase",
+      "agentUrl": "Agent URL",
+      "agentToken": "Agent Token",
+      "agentTokenPlaceholder": "Used for future agent authentication",
+      "displayName": "Initial Workspace Name",
+      "displayNamePlaceholder": "Optional friendly name for the first workspace",
+      "securityNotice": "For SSH bootstrap hosts, the platform installs and stores a managed SSH key for future access. Saving the SSH password as a fallback is optional and off by default. Agent tokens are also persisted when a remote agent is available.",
+      "agentPlaceholder": "Existing remote agent URL",
+      "modes": {
+        "bootstrap": "Bootstrap via SSH",
+        "bootstrapHint": "Host, port, username, and one-time SSH credentials.",
+        "agent": "Use Existing Agent",
+        "agentHint": "Register a remote-agent endpoint and token."
+      }
+    },
+    "messages": {
+      "testSuccess": "Remote host probe completed.",
+      "connectionReachable": "Connection reachable.",
+      "createSuccess": "Remote host metadata saved.",
+      "bootstrapSuccess": "Remote host bootstrapped and saved.",
+      "deleteHostSuccess": "Remote host deleted.",
+      "addWorkspaceSuccess": "Remote workspace registered.",
+      "deleteWorkspaceSuccess": "Remote workspace deleted."
+    },
+    "testResult": {
+      "title": "Latest Probe Result",
+      "description": "Remote SSH probe completed.",
+      "authVerified": "SSH Auth Verified",
+      "authPending": "Auth Not Verified",
+      "remoteUser": "Remote User",
+      "shell": "Shell / OS",
+      "workspace": "Workspace Root",
+      "latency": "Probe latency:",
+      "commandAvailable": "{{command}}: {{path}}",
+      "commandMissing": "{{command}}: missing",
+      "configPresent": "{{path}} present",
+      "configMissing": "{{path}} missing"
+    },
+    "bootstrap": {
+      "title": "Remote Agent Bootstrapped",
+      "description": "The remote host was saved and a remote-agent was started over SSH.",
+      "agentUrl": "Agent URL",
+      "version": "Agent Version",
+      "agentToken": "Agent Token (shown once)",
+      "agentTokenHint": "The platform now stores this token for remote runtime access. Keep a copy if you want to re-register the host manually later.",
+      "installModeFallback": "bootstrap",
+      "portLabel": "port {{port}}"
+    },
+    "actions": {
+      "testConnection": "Test Connection",
+      "bootstrapHost": "Bootstrap & Save",
+      "saveHost": "Save Remote Host",
+      "browseRemote": "Browse Remote",
+      "refresh": "Refresh",
+      "deleteHost": "Delete Host",
+      "deleteWorkspace": "Delete",
+      "addWorkspace": "Register Workspace"
+    },
+    "browser": {
+      "title": "Browse Remote Directories",
+      "description": "Open folders on the remote machine and choose a workspace root instead of typing the path manually.",
+      "pathPlaceholder": "Paste or type a remote directory path",
+      "go": "Go",
+      "hideHidden": "Hide Hidden",
+      "showHidden": "Show Hidden",
+      "empty": "No subdirectories found here.",
+      "currentPath": "Current path:",
+      "useCurrent": "Use This Directory"
+    },
+    "saved": {
+      "title": "Saved Remote Hosts",
+      "description": "Each host can register one or more workspace roots. Workspace roots can be any absolute path on the remote machine, but platform file and Git APIs stay scoped to each workspace root.",
+      "loading": "Loading remote hosts…",
+      "empty": "No remote hosts saved yet.",
+      "emptyWorkspaces": "No workspace roots registered for this host yet."
+    },
+    "labels": {
+      "bootstrap": "SSH Bootstrap",
+      "agent": "Existing Agent",
+      "agentFallback": "Agent",
+      "agentTokenSaved": "Agent Token",
+      "managedSshKey": "Managed SSH Key",
+      "savedPasswordFallback": "Saved Password",
+      "browseFallback": "Browse fallback:",
+      "lastTested": "Last tested:",
+      "workspaces": "Workspaces"
+    },
+    "workspaceProbe": {
+      "existsWritable": "{{path}} exists and is writable.",
+      "existsReadonly": "{{path}} exists but is not writable.",
+      "existsNotDirectory": "{{path}} exists but is not a directory.",
+      "creatable": "{{path}} does not exist yet, but {{parentPath}} is writable.",
+      "parentReadonly": "{{path}} does not exist, and {{parentPath}} is not writable.",
+      "parentUnavailable": "{{path}} does not exist, and its parent directory is unavailable."
+    }
   }
 }

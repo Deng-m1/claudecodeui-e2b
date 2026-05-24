@@ -1,4 +1,4 @@
-import { Check, ChevronDown, ChevronRight, Cloud, Edit3, Folder, FolderOpen, Star, Trash2, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Cloud, Edit3, Folder, FolderOpen, Star, Trash2, X, MoreVertical } from 'lucide-react';
 import type React from 'react';
 import type { TFunction } from 'i18next';
 import { cn } from '../../../../lib/utils';
@@ -8,6 +8,7 @@ import { getTaskIndicatorStatus, resolveProjectLoadMoreProvider } from '../../ut
 import { isCloudProject as isResolvedCloudProject } from '../../../../utils/sessionSelection';
 import TaskIndicator from './TaskIndicator';
 import SidebarProjectSessions from './SidebarProjectSessions';
+import ProjectActionsMenu from './ProjectActionsMenu';
 
 type SidebarProjectItemProps = {
   project: Project;
@@ -198,11 +199,11 @@ export default function SidebarProjectItem({
             )}
             onClick={toggleProject}
           >
-            <div className="flex items-center justify-between">
-              <div className="flex min-w-0 flex-1 items-center gap-2.5">
+            <div className="flex items-center justify-between overflow-hidden">
+              <div className="flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden">
                 <div
                   className={cn(
-                    'flex h-7 w-7 items-center justify-center rounded-md transition-colors',
+                    'flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md transition-colors',
                     isExpanded ? 'bg-primary/10' : 'bg-muted',
                   )}
                 >
@@ -213,7 +214,7 @@ export default function SidebarProjectItem({
                   )}
                 </div>
 
-                <div className="min-w-0 flex-1">
+                <div className="min-w-0 flex-1 overflow-hidden">
                   {isEditing ? (
                     <input
                       type="text"
@@ -241,16 +242,25 @@ export default function SidebarProjectItem({
                     />
                   ) : (
                     <>
-                      <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
-                        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                          <h3 className="truncate text-sm font-medium text-foreground">{project.displayName}</h3>
+                      <div className="flex min-w-0 flex-1 items-center justify-between gap-2 overflow-hidden">
+                        <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+                          <h3 className="min-w-0 truncate text-sm font-medium text-foreground">{project.displayName}</h3>
+                          
+                          <ProjectActionsMenu
+                            isStarred={isStarred}
+                            onToggleStar={(e) => { e.stopPropagation(); toggleStarProject(); }}
+                            onEdit={(e) => { e.stopPropagation(); onStartEditingProject(project); }}
+                            onDelete={(e) => { e.stopPropagation(); onDeleteProject(project); }}
+                            t={t}
+                          />
+
                           {isCloudProject && (
-                            <span className="rounded-full bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-sky-700 dark:text-sky-300">
+                            <span className="inline-block max-w-[60px] flex-shrink-0 truncate rounded-md bg-gradient-to-r from-sky-500/15 to-sky-600/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-sky-700 shadow-sm ring-1 ring-sky-500/20 dark:from-sky-500/20 dark:to-sky-600/20 dark:text-sky-300 dark:ring-sky-400/30">
                               {cloudSectionLabel}
                             </span>
                           )}
                           {isCloudProject && cloudStatus && (
-                            <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-[0.1em] text-muted-foreground">
+                            <span className="inline-block max-w-[70px] flex-shrink-0 truncate rounded-md bg-gradient-to-r from-slate-100 to-slate-200/80 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-slate-700 shadow-sm ring-1 ring-slate-300/40 dark:from-slate-800/80 dark:to-slate-900/80 dark:text-slate-300 dark:ring-slate-700/50">
                               {cloudStatus}
                             </span>
                           )}
@@ -277,9 +287,9 @@ export default function SidebarProjectItem({
                 </div>
               </div>
 
-              <div className="flex items-center gap-0.5">
+              <div className="flex items-center">
                 {isEditing ? (
-                  <>
+                  <div className="flex gap-0.5">
                     <button
                       className="flex h-7 w-7 items-center justify-center rounded-md bg-green-500 shadow-sm transition-all duration-150 active:scale-90 active:shadow-none dark:bg-green-600"
                       onClick={(event) => {
@@ -298,69 +308,24 @@ export default function SidebarProjectItem({
                     >
                       <X className="h-3.5 w-3.5 text-white" />
                     </button>
-                  </>
+                  </div>
                 ) : (
-                  <>
-                    <button
-                      className={cn(
-                        'flex h-7 w-7 items-center justify-center rounded-md border transition-all duration-150 active:scale-90',
-                        isStarred
-                          ? 'border-yellow-200 bg-yellow-500/10 dark:border-yellow-800 dark:bg-yellow-900/30'
-                          : 'border-gray-200 bg-gray-500/10 dark:border-gray-800 dark:bg-gray-900/30',
-                      )}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        toggleStarProject();
-                      }}
-                      title={isStarred ? t('tooltips.removeFromFavorites') : t('tooltips.addToFavorites')}
-                    >
-                      <Star
-                        className={cn(
-                          'h-3.5 w-3.5 transition-colors',
-                          isStarred
-                            ? 'fill-current text-yellow-600 dark:text-yellow-400'
-                            : 'text-gray-600 dark:text-gray-400',
-                        )}
-                      />
-                    </button>
-
-                    <button
-                      className="flex h-7 w-7 items-center justify-center rounded-md border border-red-200 bg-red-500/10 active:scale-90 dark:border-red-800 dark:bg-red-900/30"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onDeleteProject(project);
-                      }}
-                    >
-                      <Trash2 className="h-3.5 w-3.5 text-red-600 dark:text-red-400" />
-                    </button>
-
-                    <button
-                      className="flex h-7 w-7 items-center justify-center rounded-md border border-primary/20 bg-primary/10 active:scale-90 dark:border-primary/30 dark:bg-primary/20"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onStartEditingProject(project);
-                      }}
-                    >
-                      <Edit3 className="h-3.5 w-3.5 text-primary" />
-                    </button>
-
-                    <button
-                      type="button"
-                      data-testid="sidebar-project-toggle"
-                      data-project-name={project.name}
-                      className="flex h-7 w-7 items-center justify-center rounded-md border border-border/60 bg-muted/40"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        toggleProject();
-                      }}
-                    >
-                      {isExpanded ? (
-                        <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-                      ) : (
-                        <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-                      )}
-                    </button>
-                  </>
+                  <button
+                    type="button"
+                    data-testid="sidebar-project-toggle"
+                    data-project-name={project.name}
+                    className="flex items-center justify-center transition-all duration-200"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggleProject();
+                    }}
+                  >
+                    {isExpanded ? (
+                      <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                    )}
+                  </button>
                 )}
               </div>
             </div>
@@ -377,7 +342,7 @@ export default function SidebarProjectItem({
             aria-selected={isSelected}
             aria-expanded={isExpanded}
             className={cn(
-              'flex-1 rounded-lg px-3 py-2 transition-colors focus:outline-none focus:ring-2 focus:ring-primary/20',
+              'flex-1 overflow-hidden rounded-lg px-3 py-2 transition-colors focus:outline-none focus:ring-2 focus:ring-primary/20',
               'cursor-pointer hover:bg-accent/50',
               isSelected && 'bg-accent text-accent-foreground',
               isStarred &&
@@ -387,14 +352,14 @@ export default function SidebarProjectItem({
             onClick={handleDesktopSelect}
             onKeyDown={handleDesktopKeyDown}
           >
-            <div className="flex min-w-0 flex-1 items-center gap-3">
+            <div className="flex min-w-0 flex-1 items-center gap-3 overflow-hidden">
               {isExpanded ? (
                 isCloudProject ? <Cloud className="h-4 w-4 flex-shrink-0 text-primary" /> : <FolderOpen className="h-4 w-4 flex-shrink-0 text-primary" />
               ) : (
                 isCloudProject ? <Cloud className="h-4 w-4 flex-shrink-0 text-muted-foreground" /> : <Folder className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
               )}
 
-              <div className="min-w-0 flex-1 text-left">
+              <div className="min-w-0 flex-1 overflow-hidden text-left">
                 {isEditing ? (
                   <div className="space-y-1">
                     <input
@@ -421,26 +386,57 @@ export default function SidebarProjectItem({
                   </div>
                 ) : (
                   <>
-                    <div className="flex items-center gap-2">
-                      <div className="truncate text-sm font-semibold text-foreground" title={project.displayName}>
-                        {project.displayName}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+                        <div className="min-w-0 truncate text-sm font-semibold text-foreground" title={project.displayName}>
+                          {project.displayName}
+                        </div>
+                        
+                        <ProjectActionsMenu
+                          isStarred={isStarred}
+                          onToggleStar={(e) => { e.stopPropagation(); toggleStarProject(); }}
+                          onEdit={(e) => { e.stopPropagation(); onStartEditingProject(project); }}
+                          onDelete={(e) => { e.stopPropagation(); onDeleteProject(project); }}
+                          t={t}
+                        />
+
+                        {isCloudProject && (
+                          <span className="inline-block max-w-[60px] flex-shrink-0 truncate rounded-md bg-gradient-to-r from-sky-500/15 to-sky-600/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-sky-700 shadow-sm ring-1 ring-sky-500/20 dark:from-sky-500/20 dark:to-sky-600/20 dark:text-sky-300 dark:ring-sky-400/30">
+                            {cloudSectionLabel}
+                          </span>
+                        )}
+                        {isCloudProject && cloudStatus && (
+                          <span className="inline-block max-w-[70px] flex-shrink-0 truncate rounded-md bg-gradient-to-r from-slate-100 to-slate-200/80 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-slate-700 shadow-sm ring-1 ring-slate-300/40 dark:from-slate-800/80 dark:to-slate-900/80 dark:text-slate-300 dark:ring-slate-700/50">
+                            {cloudStatus}
+                          </span>
+                        )}
+                        {tasksEnabled && <TaskIndicator status={taskStatus} size="xs" className="ml-1 flex-shrink-0" />}
                       </div>
-                      {isCloudProject && (
-                        <span className="rounded-full bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-sky-700 dark:text-sky-300">
-                          {cloudSectionLabel}
-                        </span>
-                      )}
-                      {isCloudProject && cloudStatus && (
-                        <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
-                          {cloudStatus}
-                        </span>
-                      )}
-                      {tasksEnabled && <TaskIndicator status={taskStatus} size="xs" className="ml-auto flex-shrink-0" />}
+
+                      <div className="flex flex-shrink-0 items-center">
+                        <button
+                          type="button"
+                          data-testid="sidebar-project-toggle"
+                          data-project-name={project.name}
+                          className="flex items-center justify-center transition-all duration-200"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            toggleProject();
+                          }}
+                          title={isExpanded ? t('actions.collapseAll', { defaultValue: 'Collapse' }) : t('actions.expandAll', { defaultValue: 'Expand' })}
+                        >
+                          {isExpanded ? (
+                            <ChevronDown className="h-4 w-4 text-muted-foreground transition-colors hover:text-foreground" />
+                          ) : (
+                            <ChevronRight className="h-4 w-4 text-muted-foreground transition-colors hover:text-foreground" />
+                          )}
+                        </button>
+                      </div>
                     </div>
 
-                    <div className="mt-0.5 text-xs text-muted-foreground">
+                    <div className="mt-0.5 truncate text-xs text-muted-foreground">
                       {isCloudProject ? (
-                        <span title={cloudRepoLabel || cloudWorkspacePath}>
+                        <span className="truncate" title={cloudRepoLabel || cloudWorkspacePath}>
                           {cloudSummary || cloudSectionLabel}
                         </span>
                       ) : (
@@ -457,7 +453,7 @@ export default function SidebarProjectItem({
                     </div>
 
                     {isCloudProject && (
-                      <div className="mt-0.5 text-[11px] text-muted-foreground/70">
+                      <div className="mt-0.5 truncate text-[11px] text-muted-foreground/70">
                         {sessionCountLabel}
                         {cloudWorkspacePath && (
                           <span className="ml-1 opacity-70" title={cloudWorkspacePath}>
@@ -471,71 +467,6 @@ export default function SidebarProjectItem({
                 )}
               </div>
             </div>
-          </div>
-
-          <div className="mt-1 flex flex-shrink-0 items-center gap-1">
-            {isEditing ? (
-              <>
-                <button
-                  className="flex h-6 w-6 items-center justify-center rounded text-green-600 transition-colors hover:bg-green-50 hover:text-green-700 dark:hover:bg-green-900/20"
-                  onClick={saveProjectName}
-                >
-                  <Check className="h-3 w-3" />
-                </button>
-                <button
-                  className="flex h-6 w-6 items-center justify-center rounded text-gray-500 transition-colors hover:bg-gray-50 hover:text-gray-700 dark:hover:bg-gray-800"
-                  onClick={onCancelEditingProject}
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </>
-            ) : (
-              <>
-                <button
-                  className={cn(
-                    'flex h-7 w-7 items-center justify-center rounded transition-all duration-200',
-                    isStarred ? 'bg-yellow-50 text-yellow-600 dark:bg-yellow-900/20 dark:text-yellow-400' : 'hover:bg-accent',
-                  )}
-                  onClick={toggleStarProject}
-                  title={isStarred ? t('tooltips.removeFromFavorites') : t('tooltips.addToFavorites')}
-                >
-                  <Star
-                    className={cn(
-                      'h-3.5 w-3.5 transition-colors',
-                      isStarred ? 'fill-current' : 'text-muted-foreground',
-                    )}
-                  />
-                </button>
-                <button
-                  className="flex h-7 w-7 items-center justify-center rounded transition-all duration-200 hover:bg-accent"
-                  onClick={() => onStartEditingProject(project)}
-                  title={t('tooltips.renameProject')}
-                >
-                  <Edit3 className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  className="flex h-7 w-7 items-center justify-center rounded transition-all duration-200 hover:bg-red-50 dark:hover:bg-red-900/20"
-                  onClick={() => onDeleteProject(project)}
-                  title={t('tooltips.deleteProject')}
-                >
-                  <Trash2 className="h-3.5 w-3.5 text-red-600 dark:text-red-400" />
-                </button>
-                <button
-                  type="button"
-                  data-testid="sidebar-project-toggle"
-                  data-project-name={project.name}
-                  className="flex h-7 w-7 items-center justify-center rounded border border-border/60 bg-background transition-all duration-200 hover:bg-accent"
-                  onClick={toggleProject}
-                  title={isExpanded ? t('actions.collapseAll', { defaultValue: 'Collapse' }) : t('actions.expandAll', { defaultValue: 'Expand' })}
-                >
-                  {isExpanded ? (
-                    <ChevronDown className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-foreground" />
-                  ) : (
-                    <ChevronRight className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-foreground" />
-                  )}
-                </button>
-              </>
-            )}
           </div>
         </div>
       </div>

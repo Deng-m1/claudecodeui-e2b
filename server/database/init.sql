@@ -179,3 +179,88 @@ CREATE TABLE IF NOT EXISTS auth_profiles (
 CREATE INDEX IF NOT EXISTS idx_auth_profiles_user_id ON auth_profiles(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_profiles_provider ON auth_profiles(provider);
 CREATE INDEX IF NOT EXISTS idx_auth_profiles_user_provider ON auth_profiles(user_id, provider);
+
+-- Remote host connection records
+CREATE TABLE IF NOT EXISTS remote_hosts (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    label TEXT NOT NULL,
+    host TEXT NOT NULL,
+    port INTEGER NOT NULL DEFAULT 22,
+    username TEXT,
+    connection_mode TEXT NOT NULL,
+    auth_method TEXT,
+    agent_url TEXT,
+    agent_token TEXT,
+    managed_ssh_private_key TEXT,
+    managed_ssh_public_key TEXT,
+    saved_ssh_password TEXT,
+    status TEXT NOT NULL DEFAULT 'unknown',
+    last_error TEXT,
+    last_tested_at DATETIME,
+    metadata_json TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_remote_hosts_user_id ON remote_hosts(user_id);
+CREATE INDEX IF NOT EXISTS idx_remote_hosts_status ON remote_hosts(status);
+
+-- Registered remote workspaces per host
+CREATE TABLE IF NOT EXISTS remote_workspaces (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    remote_host_id TEXT NOT NULL,
+    display_name TEXT,
+    workspace_root TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'registered',
+    metadata_json TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (remote_host_id) REFERENCES remote_hosts(id) ON DELETE CASCADE,
+    UNIQUE (user_id, remote_host_id, workspace_root)
+);
+
+CREATE INDEX IF NOT EXISTS idx_remote_workspaces_user_id ON remote_workspaces(user_id);
+CREATE INDEX IF NOT EXISTS idx_remote_workspaces_host_id ON remote_workspaces(remote_host_id);
+
+-- Remote host persisted chat sessions
+CREATE TABLE IF NOT EXISTS remote_host_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    remote_host_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    session_id TEXT NOT NULL UNIQUE,
+    provider TEXT NOT NULL,
+    model TEXT,
+    summary TEXT,
+    status TEXT DEFAULT 'active',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_activity DATETIME DEFAULT CURRENT_TIMESTAMP,
+    metadata_json TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (remote_host_id) REFERENCES remote_hosts(id) ON DELETE CASCADE,
+    FOREIGN KEY (workspace_id) REFERENCES remote_workspaces(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_remote_host_sessions_user_id ON remote_host_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_remote_host_sessions_host_id ON remote_host_sessions(remote_host_id);
+CREATE INDEX IF NOT EXISTS idx_remote_host_sessions_workspace_id ON remote_host_sessions(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_remote_host_sessions_provider ON remote_host_sessions(provider);
+
+-- Remote host persisted normalized messages
+CREATE TABLE IF NOT EXISTS remote_host_session_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    timestamp TEXT,
+    message_json TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(session_id, message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_remote_host_session_messages_session_id
+    ON remote_host_session_messages(session_id, id);

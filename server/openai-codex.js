@@ -16,6 +16,7 @@
 import { Codex } from '@openai/codex-sdk';
 import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
 import { codexAdapter } from './providers/codex/adapter.js';
+import { mapPermissionModeToCodexOptions } from './providers/codex/permissions.js';
 import { createNormalizedMessage } from './providers/types.js';
 
 // Track active sessions
@@ -183,32 +184,6 @@ function transformCodexEvent(event) {
       return {
         type: event.type,
         data: event
-      };
-  }
-}
-
-/**
- * Map permission mode to Codex SDK options
- * @param {string} permissionMode - 'default', 'acceptEdits', or 'bypassPermissions'
- * @returns {object} - { sandboxMode, approvalPolicy }
- */
-function mapPermissionModeToCodexOptions(permissionMode) {
-  switch (permissionMode) {
-    case 'acceptEdits':
-      return {
-        sandboxMode: 'workspace-write',
-        approvalPolicy: 'never'
-      };
-    case 'bypassPermissions':
-      return {
-        sandboxMode: 'danger-full-access',
-        approvalPolicy: 'never'
-      };
-    case 'default':
-    default:
-      return {
-        sandboxMode: 'workspace-write',
-        approvalPolicy: 'untrusted'
       };
   }
 }

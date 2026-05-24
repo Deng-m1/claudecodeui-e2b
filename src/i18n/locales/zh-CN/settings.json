@@ -108,7 +108,8 @@
     "tasks": "任务",
     "notifications": "通知",
     "plugins": "插件",
-    "e2b": "E2B 云端"
+    "e2b": "E2B 云端",
+    "remoteHosts": "远程主机"
   },
   "authCenter": {
     "title": "认证中心",
@@ -687,5 +688,144 @@
     "loadingRepos": "加载仓库中...",
     "noRepos": "未找到仓库",
     "branch": "分支："
+  },
+  "remoteHosts": {
+    "title": "远程主机",
+    "description": "注册远程机器与工作区根目录，用于 remote-host 运行时。远程 Claude、Codex、Shell、版本、认证和 resume 行为都以远程机器自身为准。",
+    "shared": {
+      "never": "从未",
+      "userFallback": "user",
+      "hostFallback": "host",
+      "homeUnavailable": "HOME 不可用",
+      "shellUnavailable": "未知 shell",
+      "systemUnavailable": "系统信息不可用",
+      "unavailable": "不可用",
+      "unknown": "未知"
+    },
+    "status": {
+      "reachable": "可达",
+      "online": "在线",
+      "bootstrapped": "已引导",
+      "unreachable": "不可达",
+      "offline": "离线",
+      "error": "错误",
+      "unknown": "未知"
+    },
+    "form": {
+      "title": "添加远程主机",
+      "description": "首次连接可选择类似 VS Code Remote SSH 的 SSH 引导，或者直接注册已有 remote agent 端点。",
+      "label": "标签",
+      "labelPlaceholder": "prod-api-host",
+      "workspaceRoot": "工作区根目录",
+      "connectionMode": "连接方式",
+      "host": "主机 / IP",
+      "hostPlaceholder": "host.example.com",
+      "port": "端口",
+      "username": "SSH 用户名",
+      "authMethod": "认证方式",
+      "passwordOption": "SSH 密码",
+      "privateKeyOption": "SSH 私钥",
+      "password": "SSH 密码",
+      "passwordPlaceholder": "用于首次引导和托管 SSH key 安装",
+      "savePasswordFallback": "保存密码作为回退",
+      "savePasswordFallbackHint": "默认关闭。平台仍会安装并保存托管 SSH key。只有在你希望 agent 和托管 key 都失败后还能再回退到密码时，才建议打开。",
+      "privateKey": "SSH 私钥",
+      "privateKeyPlaceholder": "粘贴用于引导的 PEM 私钥。",
+      "passphrase": "口令",
+      "passphrasePlaceholder": "可选的私钥口令",
+      "agentUrl": "Agent 地址",
+      "agentToken": "Agent Token",
+      "agentTokenPlaceholder": "用于后续 agent 认证",
+      "displayName": "初始工作区名称",
+      "displayNamePlaceholder": "首个工作区的可选友好名称",
+      "securityNotice": "对于 SSH 引导主机，平台会安装并保存一把托管 SSH key 以供后续访问。是否额外保存 SSH 密码作为回退是可选项，默认关闭。如果存在 remote agent，Agent token 也会被保存。",
+      "agentPlaceholder": "已有远程 agent 地址",
+      "modes": {
+        "bootstrap": "通过 SSH 引导",
+        "bootstrapHint": "填写主机、端口、用户名，以及一次性 SSH 凭据。",
+        "agent": "使用已有 Agent",
+        "agentHint": "注册一个现有 remote-agent 端点和 token。"
+      }
+    },
+    "messages": {
+      "testSuccess": "远程主机探测完成。",
+      "connectionReachable": "连接可达。",
+      "createSuccess": "远程主机元数据已保存。",
+      "bootstrapSuccess": "远程主机已引导并保存。",
+      "deleteHostSuccess": "远程主机已删除。",
+      "addWorkspaceSuccess": "远程工作区已注册。",
+      "deleteWorkspaceSuccess": "远程工作区已删除。"
+    },
+    "testResult": {
+      "title": "最近一次探测结果",
+      "description": "远程 SSH 探测已完成。",
+      "authVerified": "SSH 认证已验证",
+      "authPending": "认证未验证",
+      "remoteUser": "远程用户",
+      "shell": "Shell / 系统",
+      "workspace": "工作区根目录",
+      "latency": "探测延迟：",
+      "commandAvailable": "{{command}}: {{path}}",
+      "commandMissing": "{{command}}: 缺失",
+      "configPresent": "{{path}} 已存在",
+      "configMissing": "{{path}} 不存在"
+    },
+    "bootstrap": {
+      "title": "远程 Agent 已引导",
+      "description": "远程主机已保存，并已通过 SSH 启动 remote-agent。",
+      "agentUrl": "Agent 地址",
+      "version": "Agent 版本",
+      "agentToken": "Agent Token（仅展示一次）",
+      "agentTokenHint": "平台已保存该 token 以访问远程运行时。如果之后想手动重新注册主机，请自行留存一份。",
+      "installModeFallback": "bootstrap",
+      "portLabel": "端口 {{port}}"
+    },
+    "actions": {
+      "testConnection": "测试连接",
+      "bootstrapHost": "引导并保存",
+      "saveHost": "保存远程主机",
+      "browseRemote": "浏览远程目录",
+      "refresh": "刷新",
+      "deleteHost": "删除主机",
+      "deleteWorkspace": "删除",
+      "addWorkspace": "注册工作区"
+    },
+    "browser": {
+      "title": "浏览远程目录",
+      "description": "直接打开远程机器上的目录并选择工作区根目录，不必再手动输入完整路径。",
+      "pathPlaceholder": "粘贴或输入远程目录路径",
+      "go": "打开",
+      "hideHidden": "隐藏隐藏目录",
+      "showHidden": "显示隐藏目录",
+      "empty": "当前目录下没有子目录。",
+      "currentPath": "当前路径：",
+      "useCurrent": "使用当前目录"
+    },
+    "saved": {
+      "title": "已保存的远程主机",
+      "description": "每台主机可以注册一个或多个工作区根目录。工作区根目录可以是远程机器上的任意绝对路径，但平台的文件和 Git API 会以各自的工作区根目录为边界。",
+      "loading": "正在加载远程主机…",
+      "empty": "还没有保存任何远程主机。",
+      "emptyWorkspaces": "这台主机还没有注册任何工作区根目录。"
+    },
+    "labels": {
+      "bootstrap": "SSH 引导",
+      "agent": "已有 Agent",
+      "agentFallback": "Agent",
+      "agentTokenSaved": "Agent Token",
+      "managedSshKey": "托管 SSH Key",
+      "savedPasswordFallback": "已保存密码",
+      "browseFallback": "浏览回退链路：",
+      "lastTested": "最近测试：",
+      "workspaces": "工作区"
+    },
+    "workspaceProbe": {
+      "existsWritable": "{{path}} 已存在且可写。",
+      "existsReadonly": "{{path}} 已存在但不可写。",
+      "existsNotDirectory": "{{path}} 已存在，但不是目录。",
+      "creatable": "{{path}} 目前不存在，但 {{parentPath}} 可写，因此可以在这里创建。",
+      "parentReadonly": "{{path}} 不存在，且 {{parentPath}} 不可写。",
+      "parentUnavailable": "{{path}} 不存在，且其父目录当前不可用。"
+    }
   }
 }

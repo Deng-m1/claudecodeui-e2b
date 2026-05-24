@@ -14,6 +14,7 @@ import NotificationsSettingsTab from '../view/tabs/NotificationsSettingsTab';
 import TasksSettingsTab from '../view/tabs/tasks-settings/TasksSettingsTab';
 import PluginSettingsTab from '../../plugins/view/PluginSettingsTab';
 import E2BSettingsTab from '../view/tabs/e2b-settings/E2BSettingsTab';
+import RemoteHostsSettingsTab from '../view/tabs/remote-hosts-settings/RemoteHostsSettingsTab';
 import { useSettingsController } from '../hooks/useSettingsController';
 import { useWebPush } from '../../../hooks/useWebPush';
 import type { SettingsProps } from '../types/types';
@@ -118,7 +119,7 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
   const isWideLayout = activeTab === 'authCenter';
 
   return (
-    <div className="modal-backdrop fixed inset-0 z-[9999] flex items-center justify-center bg-background/80 backdrop-blur-sm md:p-4">
+    <div data-testid="settings-modal" className="modal-backdrop fixed inset-0 z-[9999] flex items-center justify-center bg-background/80 backdrop-blur-sm md:p-4">
       <div
         className={`flex h-full w-full flex-col overflow-hidden border border-border bg-background shadow-2xl md:rounded-xl ${
           isWideLayout ? 'md:h-[94vh] md:max-w-[96vw] xl:max-w-[1440px]' : 'md:h-[90vh] md:max-w-4xl'
@@ -129,7 +130,7 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
           <h2 className="text-base font-semibold text-foreground">{t('title')}</h2>
           <div className="flex items-center gap-2">
             {saveStatus === 'success' && (
-              <span className="text-xs text-muted-foreground animate-in fade-in">{t('saveStatus.success')}</span>
+              <span className="animate-in fade-in text-xs text-muted-foreground">{t('saveStatus.success')}</span>
             )}
             <Button
               variant="ghost"
@@ -221,6 +222,8 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
               {activeTab === 'plugins' && <PluginSettingsTab />}
 
               {activeTab === 'e2b' && <E2BSettingsTab />}
+
+              {activeTab === 'remoteHosts' && <RemoteHostsSettingsTab />}
             </div>
           </main>
         </div>

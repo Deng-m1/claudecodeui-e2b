@@ -2,6 +2,8 @@ import { credentialsDb, e2bSandboxDb } from '../../database/db.js';
 import { extractProjectDirectory } from '../../projects.js';
 import { ensureSandboxConnected } from '../../providers/e2b/sandbox-manager.js';
 import { extractSandboxIdFromProjectName, isE2BProjectName } from '../../providers/e2b/project-utils.js';
+import { isRemoteHostProjectName } from '../../providers/remote-host/project-utils.js';
+import { resolveRemoteWorkspaceTarget } from '../../providers/remote-host/agent-client.js';
 import { getProjectCapabilities } from './capabilities.js';
 
 function resolveSandboxEnvs(userId) {
@@ -47,6 +49,23 @@ export async function resolveProjectRuntimeContext(projectName, { userId = null 
       sandboxClient,
       envs,
       capabilities: getProjectCapabilities('e2b'),
+    };
+  }
+
+  if (isRemoteHostProjectName(projectName)) {
+    const target = resolveRemoteWorkspaceTarget(projectName, userId);
+
+    return {
+      runtime: 'remote_host',
+      targetId: target.host.id,
+      workspaceId: target.workspace.id,
+      projectName,
+      projectRoot: target.workspace.workspace_root,
+      userId,
+      sandboxId: null,
+      remoteHost: target.host,
+      remoteWorkspace: target.workspace,
+      capabilities: getProjectCapabilities('remote_host'),
     };
   }
 

@@ -107,8 +107,8 @@
     "authCenter": "인증 센터",
     "tasks": "작업",
     "notifications": "알림",
-    "plugins": "플러그인"
-
+    "plugins": "플러그인",
+    "remoteHosts": "Remote Hosts"
   },
   "authCenter": {
     "title": "인증 센터",

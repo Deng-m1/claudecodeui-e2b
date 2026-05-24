@@ -122,7 +122,10 @@ export default function SidebarProjectList({
   }, [selectedProject]);
 
   const showProjects = !isLoading && projects.length > 0 && filteredProjects.length > 0;
-  const localProjects = filteredProjects.filter((project) => !isCloudProject(project));
+  const remoteProjects = filteredProjects.filter((project) => project.runtime === 'remote_host');
+  const localProjects = filteredProjects.filter(
+    (project) => project.runtime !== 'remote_host' && !isCloudProject(project),
+  );
   const cloudProjects = filteredProjects.filter((project) => isCloudProject(project));
 
   const renderProjectSection = (sectionProjects: Project[], title: string, testId: string) => {
@@ -200,6 +203,11 @@ export default function SidebarProjectList({
                 localProjects,
                 t('projects.localSection', { defaultValue: 'Local' }),
                 'sidebar-project-section-local',
+              )}
+              {renderProjectSection(
+                remoteProjects,
+                t('projects.remoteSection', { defaultValue: 'Remote' }),
+                'sidebar-project-section-remote',
               )}
               {renderProjectSection(
                 cloudProjects,

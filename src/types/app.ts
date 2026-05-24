@@ -1,6 +1,6 @@
 export type SessionProvider = 'claude' | 'cursor' | 'codex' | 'gemini' | 'e2b';
-export type RuntimeMode = 'local' | 'e2b';
-export type ProjectKind = 'local' | 'cloud';
+export type RuntimeMode = 'local' | 'e2b' | 'remote_host';
+export type ProjectKind = 'local' | 'cloud' | 'remote';
 
 export interface CloudProjectMeta {
   sandboxId: string;
@@ -21,6 +21,7 @@ export interface ProjectSession {
   title?: string;
   summary?: string;
   name?: string;
+  runtime?: RuntimeMode;
   createdAt?: string;
   created_at?: string;
   updated_at?: string;

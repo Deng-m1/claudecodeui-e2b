@@ -16,6 +16,7 @@
     "fetchingProjects": "Fetching your Claude projects and sessions",
     "projects": "projects",
     "localSection": "Local",
+    "remoteSection": "Remote",
     "cloudSection": "Cloud",
     "sessionCountLabel_one": "{{shown}} session",
     "sessionCountLabel_other": "{{shown}} sessions",

@@ -66,7 +66,15 @@ import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import os from 'os';
 import sessionManager from './sessionManager.js';
-import { applyCustomSessionNames, e2bSandboxDb, e2bSessionDb, e2bSessionMessagesDb } from './database/db.js';
+import {
+  applyCustomSessionNames,
+  e2bSandboxDb,
+  e2bSessionDb,
+  e2bSessionMessagesDb,
+  remoteHostSessionsDb,
+  remoteHostsDb,
+  remoteWorkspacesDb,
+} from './database/db.js';
 import {
   buildE2BProjectName,
   extractSandboxIdFromProjectName,
@@ -74,6 +82,8 @@ import {
   isE2BProjectName,
   resolveE2BAgentProvider,
 } from './providers/e2b/project-utils.js';
+import { buildRemoteHostProjectName, isRemoteHostProjectName } from './providers/remote-host/project-utils.js';
+import { discoverRemoteHostSessionsByWorkspace } from './providers/remote-host/native-sessions.js';
 import { getProjectCapabilities } from './services/project-runtime/capabilities.js';
 
 // Import TaskMaster detection functions
@@ -207,6 +217,8 @@ async function detectTaskMasterFolder(projectPath) {
 // Cache for extracted project directories
 const projectDirectoryCache = new Map();
 const CODEX_INDEX_REFRESH_TTL_MS = 5000;
+const CODEX_PREVIEW_HEAD_BYTES = 128 * 1024;
+const CODEX_PREVIEW_TAIL_BYTES = 128 * 1024;
 const SESSION_PAGE_SIZE = 5;
 const SUPPORTED_SESSION_PROVIDERS = ['claude', 'cursor', 'codex', 'gemini'];
 const REQUIRED_CURSOR_STORE_TABLES = ['meta', 'blobs'];
@@ -541,6 +553,31 @@ function normalizeE2BSessionRecord(record) {
   };
 }
 
+function normalizeRemoteHostSessionRecord(record) {
+  const metadata = parseJsonOrNull(record.metadata_json);
+  const summary =
+    record.summary ||
+    metadata?.summary ||
+    metadata?.title ||
+    'New Session';
+
+  return {
+    id: record.session_id,
+    summary,
+    name: summary,
+    title: summary,
+    createdAt: record.created_at,
+    created_at: record.created_at,
+    updated_at: record.last_activity,
+    lastActivity: record.last_activity,
+    messageCount: Number(record.message_count ?? metadata?.messageCount ?? 0),
+    provider: record.provider,
+    model: record.model,
+    status: record.status,
+    runtime: 'remote_host',
+  };
+}
+
 function extractProjectAuthSelections(value) {
   if (value && typeof value === 'object') {
     return value;
@@ -638,6 +675,68 @@ function buildE2BProviderSessionMeta(sessions, limit = SESSION_PAGE_SIZE) {
   };
 }
 
+function buildRemoteHostProviderSessionMeta(sessions, limit = SESSION_PAGE_SIZE) {
+  const counts = Object.fromEntries(
+    SUPPORTED_SESSION_PROVIDERS.map((provider) => [provider, 0]),
+  );
+
+  for (const session of sessions) {
+    const provider = typeof session.provider === 'string' ? session.provider : 'claude';
+    counts[provider] = (counts[provider] || 0) + 1;
+  }
+
+  const meta = buildProjectSessionMetaFromProviders(
+    Object.fromEntries(
+      SUPPORTED_SESSION_PROVIDERS.map((provider) => [
+        provider,
+        {
+          total: counts[provider] || 0,
+          hasMore: limit > 0 ? (counts[provider] || 0) > limit : false,
+        },
+      ]),
+    ),
+  );
+
+  return {
+    ...meta,
+    hasMore: limit > 0 ? sessions.length > limit : false,
+    total: sessions.length,
+  };
+}
+
+function mergeRemoteProjectSessions(persistedSessions = [], discoveredSessions = []) {
+  const merged = new Map();
+
+  for (const session of persistedSessions) {
+    if (!session?.id) {
+      continue;
+    }
+
+    merged.set(session.id, {
+      ...session,
+    });
+  }
+
+  for (const session of discoveredSessions) {
+    if (!session?.id) {
+      continue;
+    }
+
+    const existing = merged.get(session.id) || null;
+    merged.set(session.id, {
+      ...(existing || {}),
+      ...session,
+      messageCount: Number(
+        session.messageCount
+        ?? existing?.messageCount
+        ?? 0,
+      ),
+    });
+  }
+
+  return Array.from(merged.values());
+}
+
 function buildE2BProject(sandboxRecord, config, options = {}) {
   const { limit = SESSION_PAGE_SIZE, offset = 0 } = options;
   const projectName = buildE2BProjectName(sandboxRecord.sandbox_id);
@@ -675,6 +774,56 @@ function buildE2BProject(sandboxRecord, config, options = {}) {
       createdAt: sandboxRecord.created_at,
       lastActivity: sandboxRecord.last_activity,
       metadata,
+    },
+  };
+}
+
+function buildRemoteHostProject(workspaceRecord, hostRecord, options = {}) {
+  const { limit = SESSION_PAGE_SIZE, offset = 0 } = options;
+  const workspaceRoot = workspaceRecord.workspace_root;
+  const projectName = buildRemoteHostProjectName(workspaceRecord.id);
+  const displayName = workspaceRecord.display_name
+    || `${hostRecord.label}: ${workspaceRoot}`;
+  const persistedSessions = remoteHostSessionsDb
+    .getByWorkspace(workspaceRecord.user_id, workspaceRecord.id)
+    .map(normalizeRemoteHostSessionRecord);
+  const allSessions = sortSessionsByLastActivity(
+    mergeRemoteProjectSessions(persistedSessions, options.discoveredSessions || []),
+  );
+  const providerResults = Object.fromEntries(
+    SUPPORTED_SESSION_PROVIDERS.map((provider) => {
+      const providerSessions = allSessions.filter((session) => session.provider === provider);
+      applyCustomSessionNames(providerSessions, provider);
+      return [provider, paginateSessions(providerSessions, limit, offset)];
+    }),
+  );
+
+  return {
+    name: projectName,
+    path: workspaceRoot,
+    displayName,
+    fullPath: workspaceRoot,
+    kind: 'remote',
+    runtime: 'remote_host',
+    capabilities: getProjectCapabilities('remote_host'),
+    authSelections: null,
+    sessions: providerResults.claude.sessions,
+    cursorSessions: providerResults.cursor.sessions,
+    codexSessions: providerResults.codex.sessions,
+    geminiSessions: providerResults.gemini.sessions,
+    e2bSessions: [],
+    sessionMeta: buildRemoteHostProviderSessionMeta(allSessions, limit),
+    remote: {
+      userId: workspaceRecord.user_id,
+      hostId: hostRecord.id,
+      workspaceId: workspaceRecord.id,
+      label: hostRecord.label,
+      host: hostRecord.host,
+      port: hostRecord.port,
+      username: hostRecord.username,
+      status: hostRecord.status,
+      agentUrl: hostRecord.agent_url,
+      workspaceRoot,
     },
   };
 }
@@ -755,6 +904,7 @@ async function buildBootstrapProject(project, session, {
   runtime = 'local',
   kind = 'local',
   cloud = null,
+  remote = null,
   includeAllProviderSessions = true,
   prefillSelectedSessionOnly = false,
 } = {}) {
@@ -768,6 +918,7 @@ async function buildBootstrapProject(project, session, {
     capabilities: getProjectCapabilities(runtime),
     authSelections: project.authSelections || null,
     cloud,
+    remote,
     sessions: [],
     cursorSessions: [],
     codexSessions: [],
@@ -791,6 +942,70 @@ async function buildBootstrapProject(project, session, {
         session,
       ),
       sessionMeta: buildE2BProviderSessionMeta(allSessions, SESSION_PAGE_SIZE),
+    };
+  }
+
+  if (runtime === 'remote_host') {
+    const workspaceId = project.remote?.workspaceId || remote?.workspaceId || null;
+    const remoteUserId = project.remote?.userId || remote?.userId || null;
+    const allSessions = workspaceId
+      ? sortSessionsByLastActivity(
+          remoteHostSessionsDb.getByWorkspace(remoteUserId, workspaceId).map(normalizeRemoteHostSessionRecord),
+        )
+      : [];
+
+    if (prefillSelectedSessionOnly) {
+      const providerResults = {
+        claude: { sessions: [], hasMore: false, total: 0 },
+        cursor: { sessions: [], hasMore: false, total: 0 },
+        codex: { sessions: [], hasMore: false, total: 0 },
+        gemini: { sessions: [], hasMore: false, total: 0 },
+      };
+      if (providerResults[provider]) {
+        providerResults[provider] = {
+          sessions: session ? [session] : [],
+          hasMore: false,
+          total: session ? 1 : 0,
+        };
+      }
+
+      return {
+        ...baseProject,
+        sessions: provider === 'claude' && session ? [session] : [],
+        cursorSessions: provider === 'cursor' && session ? [session] : [],
+        codexSessions: provider === 'codex' && session ? [session] : [],
+        geminiSessions: provider === 'gemini' && session ? [session] : [],
+        sessionMeta: buildProjectSessionMetaFromProviders(providerResults),
+      };
+    }
+
+    const providerResults = Object.fromEntries(
+      SUPPORTED_SESSION_PROVIDERS.map((candidateProvider) => {
+        const providerSessions = allSessions.filter((candidateSession) => candidateSession.provider === candidateProvider);
+        applyCustomSessionNames(providerSessions, candidateProvider);
+        return [candidateProvider, paginateSessions(providerSessions, SESSION_PAGE_SIZE, 0)];
+      }),
+    );
+
+    return {
+      ...baseProject,
+      sessions: mergeBootstrapSessionIntoList(
+        providerResults.claude.sessions || [],
+        provider === 'claude' ? session : null,
+      ),
+      cursorSessions: mergeBootstrapSessionIntoList(
+        providerResults.cursor.sessions || [],
+        provider === 'cursor' ? session : null,
+      ),
+      codexSessions: mergeBootstrapSessionIntoList(
+        providerResults.codex.sessions || [],
+        provider === 'codex' ? session : null,
+      ),
+      geminiSessions: mergeBootstrapSessionIntoList(
+        providerResults.gemini.sessions || [],
+        provider === 'gemini' ? session : null,
+      ),
+      sessionMeta: buildRemoteHostProviderSessionMeta(allSessions, SESSION_PAGE_SIZE),
     };
   }
 
@@ -1313,6 +1528,67 @@ async function findE2BSessionBootstrap(sessionId, userId, config = {}) {
   };
 }
 
+async function findRemoteHostSessionBootstrap(sessionId, userId) {
+  const sessionRecord = remoteHostSessionsDb.getBySessionId(sessionId);
+  if (!sessionRecord || (userId && sessionRecord.user_id !== userId)) {
+    return null;
+  }
+
+  const workspaceRecord = remoteWorkspacesDb.getById(userId, sessionRecord.workspace_id);
+  if (!workspaceRecord) {
+    return null;
+  }
+
+  const hostRecord = remoteHostsDb.getById(userId, workspaceRecord.remote_host_id);
+  if (!hostRecord) {
+    return null;
+  }
+
+  const session = normalizeRemoteHostSessionRecord(sessionRecord);
+  applyCustomSessionNames([session], session.provider || 'claude');
+
+  const projectName = buildRemoteHostProjectName(workspaceRecord.id);
+  const project = {
+    name: projectName,
+    displayName: workspaceRecord.display_name || `${hostRecord.label}: ${workspaceRecord.workspace_root}`,
+    path: workspaceRecord.workspace_root,
+    fullPath: workspaceRecord.workspace_root,
+    authSelections: null,
+    remote: {
+      userId,
+      hostId: hostRecord.id,
+      workspaceId: workspaceRecord.id,
+      label: hostRecord.label,
+      host: hostRecord.host,
+      port: hostRecord.port,
+      username: hostRecord.username,
+      status: hostRecord.status,
+      agentUrl: hostRecord.agent_url,
+      workspaceRoot: workspaceRecord.workspace_root,
+    },
+  };
+
+  return {
+    provider: session.provider,
+    project: await buildBootstrapProject(
+      project,
+      session,
+      {
+        provider: session.provider,
+        runtime: 'remote_host',
+        kind: 'remote',
+        remote: project.remote,
+      },
+    ),
+    session: {
+      ...session,
+      __provider: session.provider,
+      __projectName: project.name,
+      __runtime: 'remote_host',
+    },
+  };
+}
+
 async function findSessionBootstrapFallback(sessionId, userId) {
   const projects = await getProjects(null, { userId });
 
@@ -1337,7 +1613,7 @@ async function findSessionBootstrapFallback(sessionId, userId) {
             ? 'codex'
             : project.geminiSessions?.some((candidate) => candidate.id === sessionId)
               ? 'gemini'
-              : 'claude';
+              : (session.provider || 'claude');
 
     return {
       provider: project.runtime === 'e2b' ? 'e2b' : provider,
@@ -1346,7 +1622,7 @@ async function findSessionBootstrapFallback(sessionId, userId) {
         ...session,
         __provider: provider,
         __projectName: project.name,
-        __runtime: project.runtime === 'e2b' ? 'e2b' : 'local',
+        __runtime: project.runtime === 'e2b' ? 'e2b' : (project.runtime === 'remote_host' ? 'remote_host' : 'local'),
       },
     };
   }
@@ -1361,6 +1637,7 @@ async function getSessionBootstrap(sessionId, options = {}) {
   const fastResolvers = sessionId.startsWith('e2b_')
     ? [
         () => findE2BSessionBootstrap(sessionId, userId, config),
+        () => findRemoteHostSessionBootstrap(sessionId, userId),
         () => findClaudeSessionBootstrap(sessionId, config),
         () => findCodexSessionBootstrap(sessionId, config),
         () => findGeminiSessionBootstrap(sessionId, config),
@@ -1369,6 +1646,7 @@ async function getSessionBootstrap(sessionId, options = {}) {
     : looksLikeUuidSessionId(sessionId)
       ? [
           () => findE2BSessionBootstrap(sessionId, userId, config),
+          () => findRemoteHostSessionBootstrap(sessionId, userId),
           () => findCodexSessionBootstrap(sessionId, config),
           () => findGeminiSessionBootstrap(sessionId, config),
           () => findCursorSessionBootstrap(sessionId, config),
@@ -1376,6 +1654,7 @@ async function getSessionBootstrap(sessionId, options = {}) {
         ]
       : [
           () => findE2BSessionBootstrap(sessionId, userId, config),
+          () => findRemoteHostSessionBootstrap(sessionId, userId),
           () => findClaudeSessionBootstrap(sessionId, config),
           () => findCodexSessionBootstrap(sessionId, config),
           () => findGeminiSessionBootstrap(sessionId, config),
@@ -1684,6 +1963,45 @@ async function getProjects(progressCallback = null, options = {}) {
       projects.push(...cloudProjects);
     } catch (error) {
       console.warn('[Projects] Could not load E2B cloud projects:', error.message);
+    }
+
+    try {
+      const hosts = remoteHostsDb.getByUser(userId);
+      const hostsById = new Map(hosts.map((host) => [host.id, host]));
+      const remoteWorkspaces = remoteWorkspacesDb.getByUser(userId);
+      const discoveredSessionsByWorkspace = new Map();
+
+      await Promise.all(
+        hosts.map(async (host) => {
+          const hostWorkspaces = remoteWorkspaces.filter((workspace) => workspace.remote_host_id === host.id);
+          if (hostWorkspaces.length === 0) {
+            return;
+          }
+
+          try {
+            const discoveredByWorkspace = await discoverRemoteHostSessionsByWorkspace(host, hostWorkspaces);
+            for (const [workspaceId, sessions] of discoveredByWorkspace.entries()) {
+              discoveredSessionsByWorkspace.set(workspaceId, sessions);
+            }
+          } catch (error) {
+            console.warn(`[Projects] Could not discover native sessions for remote host ${host.label || host.host}:`, error.message);
+          }
+        }),
+      );
+
+      const remoteProjects = remoteWorkspaces
+        .map((workspaceRecord) => {
+          const hostRecord = hostsById.get(workspaceRecord.remote_host_id);
+          return hostRecord
+            ? buildRemoteHostProject(workspaceRecord, hostRecord, {
+              discoveredSessions: discoveredSessionsByWorkspace.get(workspaceRecord.id) || [],
+            })
+            : null;
+        })
+        .filter(Boolean);
+      projects.push(...remoteProjects);
+    } catch (error) {
+      console.warn('[Projects] Could not load remote host projects:', error.message);
     }
   }
 
@@ -2702,86 +3020,130 @@ function isVisibleCodexUserMessage(payload) {
   return true;
 }
 
+function updateCodexSessionMeta(currentMeta, entry) {
+  if (entry.type !== 'session_meta' || !entry.payload) {
+    return currentMeta;
+  }
+
+  const nextSessionMeta = {
+    id: entry.payload.id,
+    cwd: entry.payload.cwd,
+    model: entry.payload.model || entry.payload.model_provider,
+    timestamp: entry.timestamp,
+    git: entry.payload.git,
+    forkedFromId:
+      typeof entry.payload.forked_from_id === 'string' && entry.payload.forked_from_id.trim()
+        ? entry.payload.forked_from_id.trim()
+        : null,
+  };
+
+  if (!currentMeta) {
+    return nextSessionMeta;
+  }
+
+  if (currentMeta.id === nextSessionMeta.id) {
+    return {
+      ...currentMeta,
+      ...nextSessionMeta,
+      forkedFromId: currentMeta.forkedFromId || nextSessionMeta.forkedFromId || null,
+    };
+  }
+
+  return currentMeta;
+}
+
+function updateCodexPreviewState(state, entry) {
+  if (entry.timestamp) {
+    state.lastTimestamp = entry.timestamp;
+  }
+
+  if (entry.type === 'event_msg' && isVisibleCodexUserMessage(entry.payload) && entry.payload.message) {
+    state.lastUserMessage = entry.payload.message;
+  }
+
+  if (entry.type === 'response_item' && entry.payload?.type === 'message' && entry.payload.role === 'assistant') {
+    state.hasAssistantMessages = true;
+  }
+}
+
+function summarizeCodexPreview({ sessionMeta, lastTimestamp, lastUserMessage, hasAssistantMessages }) {
+  if (!sessionMeta) {
+    return null;
+  }
+
+  return {
+    ...sessionMeta,
+    timestamp: lastTimestamp || sessionMeta.timestamp,
+    summary: lastUserMessage
+      ? (lastUserMessage.length > 50 ? lastUserMessage.substring(0, 50) + '...' : lastUserMessage)
+      : 'Codex Session',
+    // Project/session list rendering only needs a lightweight preview.
+    // Detailed message counts remain available from the full session read path.
+    messageCount: hasAssistantMessages || lastUserMessage ? 1 : 0,
+  };
+}
+
+async function parseCodexSessionPreview(filePath) {
+  const stats = await fs.stat(filePath);
+  if (!stats.size) {
+    return null;
+  }
+
+  const headBytes = Math.min(stats.size, CODEX_PREVIEW_HEAD_BYTES);
+  const tailBytes = Math.min(stats.size, CODEX_PREVIEW_TAIL_BYTES);
+  const tailStart = Math.max(0, stats.size - tailBytes);
+  const previewState = {
+    sessionMeta: null,
+    lastTimestamp: null,
+    lastUserMessage: null,
+    hasAssistantMessages: false,
+  };
+  const handleTextChunk = (text, { dropFirstLine = false } = {}) => {
+    const lines = text.split('\n');
+    const effectiveLines = dropFirstLine ? lines.slice(1) : lines;
+
+    for (const line of effectiveLines) {
+      if (!line.trim()) {
+        continue;
+      }
+
+      try {
+        const entry = JSON.parse(line);
+        previewState.sessionMeta = updateCodexSessionMeta(previewState.sessionMeta, entry);
+        updateCodexPreviewState(previewState, entry);
+      } catch {
+        // Ignore partial or malformed lines in preview mode.
+      }
+    }
+  };
+
+  const fileHandle = await fs.open(filePath, 'r');
+  try {
+    const headBuffer = Buffer.alloc(headBytes);
+    await fileHandle.read(headBuffer, 0, headBytes, 0);
+    handleTextChunk(headBuffer.toString('utf8'));
+
+    if (tailStart > 0) {
+      const tailBuffer = Buffer.alloc(tailBytes);
+      await fileHandle.read(tailBuffer, 0, tailBytes, tailStart);
+      handleTextChunk(tailBuffer.toString('utf8'), { dropFirstLine: true });
+    }
+  } finally {
+    await fileHandle.close();
+  }
+
+  return summarizeCodexPreview(previewState);
+}
+
 // Parse a Codex session JSONL file to extract metadata
 async function parseCodexSessionFile(filePath) {
   try {
-    const fileStream = fsSync.createReadStream(filePath);
-    const rl = readline.createInterface({
-      input: fileStream,
-      crlfDelay: Infinity
-    });
-
-    let sessionMeta = null;
-    let lastTimestamp = null;
-    let lastUserMessage = null;
-    let messageCount = 0;
-
-    for await (const line of rl) {
-      if (line.trim()) {
-        try {
-          const entry = JSON.parse(line);
-
-          // Track timestamp
-          if (entry.timestamp) {
-            lastTimestamp = entry.timestamp;
-          }
-
-          // Extract session metadata
-          if (entry.type === 'session_meta' && entry.payload) {
-            const nextSessionMeta = {
-              id: entry.payload.id,
-              cwd: entry.payload.cwd,
-              model: entry.payload.model || entry.payload.model_provider,
-              timestamp: entry.timestamp,
-              git: entry.payload.git,
-              forkedFromId:
-                typeof entry.payload.forked_from_id === 'string' && entry.payload.forked_from_id.trim()
-                  ? entry.payload.forked_from_id.trim()
-                  : null,
-            };
-
-            if (!sessionMeta) {
-              sessionMeta = nextSessionMeta;
-            } else if (sessionMeta.id === nextSessionMeta.id) {
-              sessionMeta = {
-                ...sessionMeta,
-                ...nextSessionMeta,
-                forkedFromId: sessionMeta.forkedFromId || nextSessionMeta.forkedFromId || null,
-              };
-            }
-          }
-
-          // Count visible user messages and extract summary from the latest plain user input.
-          if (entry.type === 'event_msg' && isVisibleCodexUserMessage(entry.payload)) {
-            messageCount++;
-            if (entry.payload.message) {
-              lastUserMessage = entry.payload.message;
-            }
-          }
-
-          if (entry.type === 'response_item' && entry.payload?.type === 'message' && entry.payload.role === 'assistant') {
-            messageCount++;
-          }
-
-        } catch (parseError) {
-          // Skip malformed lines
-        }
-      }
-    }
-
-    if (sessionMeta) {
-      return {
-        ...sessionMeta,
-        timestamp: lastTimestamp || sessionMeta.timestamp,
-        summary: lastUserMessage ?
-          (lastUserMessage.length > 50 ? lastUserMessage.substring(0, 50) + '...' : lastUserMessage) :
-          'Codex Session',
-        messageCount
-      };
+    const preview = await parseCodexSessionPreview(filePath);
+    if (preview) {
+      return preview;
     }
 
     return null;
-
   } catch (error) {
     console.error('Error parsing Codex session file:', error);
     return null;
@@ -3626,6 +3988,7 @@ async function getProjectSessionsPage({
   provider = 'claude',
   limit = SESSION_PAGE_SIZE,
   offset = 0,
+  userId = null,
 } = {}) {
   const normalizedProvider = typeof provider === 'string' ? provider.toLowerCase() : 'claude';
 
@@ -3647,6 +4010,50 @@ async function getProjectSessionsPage({
     }
 
     applyCustomSessionNames(sessions, 'e2b');
+    return paginateSessions(sessions, limit, offset);
+  }
+
+  if (isRemoteHostProjectName(projectName)) {
+    const workspaceId = projectName.slice('remote__'.length).trim();
+    if (!workspaceId) {
+      return { sessions: [], hasMore: false, total: 0, offset, limit };
+    }
+
+    const workspace = userId ? remoteWorkspacesDb.getById(userId, workspaceId) : null;
+    if (!workspace) {
+      return { sessions: [], hasMore: false, total: 0, offset, limit };
+    }
+
+    const host = remoteHostsDb.getById(workspace.user_id, workspace.remote_host_id);
+    const persistedSessions = remoteHostSessionsDb
+      .getByWorkspace(workspace.user_id, workspaceId)
+      .map(normalizeRemoteHostSessionRecord);
+    let discoveredSessions = [];
+
+    if (host) {
+      try {
+        const discoveredByWorkspace = await discoverRemoteHostSessionsByWorkspace(host, [workspace]);
+        discoveredSessions = discoveredByWorkspace.get(workspaceId) || [];
+      } catch (error) {
+        console.warn(`[Projects] Could not discover native remote sessions for ${workspace.workspace_root}:`, error.message);
+      }
+    }
+
+    let sessions = sortSessionsByLastActivity(
+      mergeRemoteProjectSessions(persistedSessions, discoveredSessions),
+    );
+
+    if (normalizedProvider && normalizedProvider !== 'all') {
+      sessions = sessions.filter((session) => session.provider === normalizedProvider);
+      applyCustomSessionNames(sessions, normalizedProvider);
+    } else {
+      for (const candidateProvider of SUPPORTED_SESSION_PROVIDERS) {
+        applyCustomSessionNames(
+          sessions.filter((session) => session.provider === candidateProvider),
+          candidateProvider,
+        );
+      }
+    }
     return paginateSessions(sessions, limit, offset);
   }
 

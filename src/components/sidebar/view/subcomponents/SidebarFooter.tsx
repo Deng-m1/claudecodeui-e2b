@@ -101,6 +101,7 @@ export default function SidebarFooter({
       {/* Desktop settings */}
       <div className="hidden px-2 py-1.5 md:block">
         <button
+          data-testid="open-settings"
           className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
           onClick={onShowSettings}
         >
@@ -129,6 +130,7 @@ export default function SidebarFooter({
       {/* Mobile settings */}
       <div className="px-3 pb-20 pt-2 md:hidden">
         <button
+          data-testid="open-settings-mobile"
           className="flex h-12 w-full items-center gap-3.5 rounded-xl bg-muted/40 px-4 transition-all hover:bg-muted/60 active:scale-[0.98]"
           onClick={onShowSettings}
         >

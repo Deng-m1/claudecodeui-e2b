@@ -116,7 +116,7 @@ type ClaudePermissionsResponse = {
 
 type ActiveLoginProvider = AgentProvider | '';
 
-const KNOWN_MAIN_TABS: SettingsMainTab[] = ['agents', 'appearance', 'git', 'api', 'authCenter', 'tasks', 'notifications', 'plugins', 'e2b'];
+const KNOWN_MAIN_TABS: SettingsMainTab[] = ['agents', 'appearance', 'git', 'api', 'authCenter', 'tasks', 'notifications', 'plugins', 'e2b', 'remoteHosts'];
 
 const normalizeMainTab = (tab: string): SettingsMainTab => {
   // Keep backwards compatibility with older callers that still pass "tools".
@@ -214,7 +214,7 @@ const createDefaultNotificationPreferences = (): NotificationPreferencesState =>
   },
 });
 
-export function useSettingsController({ isOpen, initialTab, projects, onClose }: UseSettingsControllerArgs) {
+export function useSettingsController({ isOpen, initialTab, projects, onClose: _onClose }: UseSettingsControllerArgs) {
   const { isDarkMode, toggleDarkMode } = useTheme() as ThemeContextValue;
   const closeTimerRef = useRef<number | null>(null);
 

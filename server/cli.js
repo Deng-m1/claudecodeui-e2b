@@ -17,6 +17,7 @@ import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import { resolveWritableDatabasePath } from './database/path.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -71,10 +72,14 @@ function loadEnvFile() {
     }
 }
 
-// Get the database path (same logic as db.js)
-function getDatabasePath() {
+// Get the effective database path (same logic as db.js)
+function getDatabasePathResolution() {
     loadEnvFile();
-    return process.env.DATABASE_PATH || path.join(__dirname, 'database', 'auth.db');
+    return resolveWritableDatabasePath({
+        configuredPath: process.env.DATABASE_PATH || '',
+        homeDir: os.homedir(),
+        cwd: process.cwd(),
+    });
 }
 
 // Get the installation directory
@@ -96,10 +101,14 @@ function showStatus() {
     console.log(`       ${c.dim(installDir)}`);
 
     // Database location
-    const dbPath = getDatabasePath();
+    const dbResolution = getDatabasePathResolution();
+    const dbPath = dbResolution.path;
     const dbExists = fs.existsSync(dbPath);
     console.log(`\n${c.info('[INFO]')} Database Location:`);
     console.log(`       ${c.dim(dbPath)}`);
+    if (dbResolution.fallbackUsed) {
+        console.log(`       Requested: ${c.dim(dbResolution.preferredPath)} ${c.warn('(not writable)')}`);
+    }
     console.log(`       Status: ${dbExists ? c.ok('[OK] Exists') : c.warn('[WARN] Not created yet (will be created on first run)')}`);
 
     if (dbExists) {

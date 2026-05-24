@@ -10,10 +10,22 @@ export const E2B_PROJECT_CAPABILITIES = Object.freeze({
   shell: true,
 });
 
+export const REMOTE_HOST_PROJECT_CAPABILITIES = Object.freeze({
+  files: true,
+  git: true,
+  shell: true,
+});
+
 export function getProjectCapabilities(runtime = 'local') {
-  return runtime === 'e2b'
-    ? { ...E2B_PROJECT_CAPABILITIES }
-    : { ...LOCAL_PROJECT_CAPABILITIES };
+  if (runtime === 'e2b') {
+    return { ...E2B_PROJECT_CAPABILITIES };
+  }
+
+  if (runtime === 'remote_host') {
+    return { ...REMOTE_HOST_PROJECT_CAPABILITIES };
+  }
+
+  return { ...LOCAL_PROJECT_CAPABILITIES };
 }
 
 export function normalizeProjectCapabilities(capabilities, runtime = 'local') {

@@ -15,6 +15,7 @@ import {
 import {
   isCloudSelection,
   resolveSelectionProvider,
+  resolveSessionRuntime,
 } from '../../../utils/sessionSelection';
 
 const MESSAGES_PER_PAGE = 20;
@@ -773,6 +774,10 @@ export function useChatSessionState({
       setTokenBudget(null);
       return;
     }
+    if (resolveSessionRuntime(selectedSession) === 'remote_host') {
+      setTokenBudget(null);
+      return;
+    }
     const sessionProvider = selectedSession.__provider || 'claude';
     if (sessionProvider !== 'claude') return;
 
@@ -790,7 +795,7 @@ export function useChatSessionState({
       }
     };
     fetchInitialTokenUsage();
-  }, [selectedProject, selectedSession?.id, selectedSession?.__provider, selectedSession?.__runtime, transportProjectName]);
+  }, [selectedProject, selectedSession?.id, selectedSession?.__provider, selectedSession?.__runtime, selectedSession?.runtime, transportProjectName]);
 
   const visibleMessages = useMemo(() => {
     if (chatMessages.length <= visibleMessageCount) return chatMessages;

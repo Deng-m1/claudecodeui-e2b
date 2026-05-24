@@ -3,6 +3,7 @@
 import './load-env.js';
 import fs from 'fs';
 import path from 'path';
+import { createHash } from 'crypto';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 
@@ -69,6 +70,7 @@ import messagesRoutes from './routes/messages.js';
 import e2bRoutes from './routes/e2b.js';
 import githubRoutes from './routes/github.js';
 import authCenterRoutes from './routes/auth-center.js';
+import remoteHostsRoutes from './routes/remote-hosts.js';
 import { destroySandbox, getSandboxId, isE2BEnabled } from './providers/e2b/sandbox-manager.js';
 import { createE2BSession, sendMessageToE2BSession, respondE2BPermission, abortE2BSession, isE2BSessionActive, getActiveE2BSessions, reconnectE2BSessionWriter, syncClaudeSettingsToSandbox } from './providers/e2b/session-bridge.js';
 import { resolveSandboxConnectHostFromRequest } from './providers/e2b/connect-host.js';
@@ -76,15 +78,27 @@ import { writeClaudePermissionSettingsToHost } from './providers/e2b/auth-sync.j
 import { createNormalizedMessage } from './providers/types.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
 import { handleWebTerminalFallbackConnection } from './utils/web-terminal-fallback.js';
-import { initializeDatabase, sessionNamesDb, applyCustomSessionNames, e2bSandboxDb, e2bSessionDb, e2bSessionMessagesDb, userClaudeSettingsDb } from './database/db.js';
+import { initializeDatabase, sessionNamesDb, applyCustomSessionNames, e2bSandboxDb, e2bSessionDb, e2bSessionMessagesDb, remoteHostSessionMessagesDb, remoteHostSessionsDb, userClaudeSettingsDb } from './database/db.js';
 import { configureWebPush } from './services/vapid-keys.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
 import { IS_PLATFORM } from './constants/config.js';
 import { getConnectableHost } from '../shared/networkHosts.js';
 import { extractSandboxIdFromProjectName, isE2BProjectName, resolveE2BAgentProvider } from './providers/e2b/project-utils.js';
+import { isRemoteHostProjectName } from './providers/remote-host/project-utils.js';
+import {
+    abortRemoteHostSession,
+    getActiveRemoteHostSessions,
+    isPersistedRemoteHostSession,
+    isRemoteHostChatSupported,
+    isRemoteHostSessionActive,
+    queryRemoteHostChat,
+    reconnectRemoteHostSessionWriter,
+} from './providers/remote-host/chat-runtime.js';
 import { WebSocketWriter } from './lib/session-writer.js';
 import { getProjectRuntimeAdapter } from './services/project-runtime/index.js';
 import { installProcessErrorGuards } from './lib/process-error-guards.js';
+import { remoteAgentRequestWithRecovery } from './providers/remote-host/transport.js';
+import { validateFilename } from './services/project-runtime/path-utils.js';
 
 installProcessErrorGuards();
 
@@ -98,6 +112,57 @@ process.on('exit', (code) => {
 
 const VALID_PROVIDERS = ['claude', 'codex', 'cursor', 'gemini', 'e2b'];
 const PREFER_GLOBAL_AGENT_CLI = process.env.CLAUDE_CODE_UI_PREFER_GLOBAL_AGENT_CLI !== 'false';
+
+function shouldUseRemoteHostChat(data = {}) {
+    const runtimeMode = data?.options?.runtimeMode;
+    if (runtimeMode === 'remote_host') {
+        return true;
+    }
+
+    const projectName = typeof data?.options?.projectName === 'string' ? data.options.projectName : '';
+    if (isRemoteHostProjectName(projectName)) {
+        return true;
+    }
+
+    const sessionId = typeof data?.options?.sessionId === 'string'
+        ? data.options.sessionId
+        : (typeof data?.sessionId === 'string' ? data.sessionId : '');
+    if (sessionId && isPersistedRemoteHostSession(sessionId)) {
+        return true;
+    }
+
+    return false;
+}
+
+function isRemoteHostChatSession(sessionId) {
+    return Boolean(sessionId) && (isRemoteHostSessionActive(sessionId) || isPersistedRemoteHostSession(sessionId));
+}
+
+function getFileOperationStatusCode(error) {
+    if (Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599) {
+        return error.status;
+    }
+
+    switch (error?.code) {
+        case 'INVALID_PROJECT_PATH':
+            return 400;
+        case 'ENOENT':
+            return 404;
+        case 'EACCES':
+        case 'EPERM':
+            return 403;
+        case 'EEXIST':
+            return 409;
+        case 'REMOTE_AGENT_TOKEN_MISSING':
+            return 412;
+        case 'REMOTE_AGENT_UNREACHABLE':
+            return 502;
+        case 'REMOTE_AGENT_TIMEOUT':
+            return 504;
+        default:
+            return 500;
+    }
+}
 
 function buildAgentCliPath(basePath = process.env.PATH || '') {
     if (!PREFER_GLOBAL_AGENT_CLI) {
@@ -115,6 +180,77 @@ function buildAgentCliPath(basePath = process.env.PATH || '') {
             }
         })
         .join(path.delimiter);
+}
+
+function buildShellExecutionPlan({
+    provider = 'claude',
+    hasSession = false,
+    sessionId = null,
+    initialCommand = null,
+    isPlainShell = false,
+    shellPath = '/bin/bash',
+    loginShell = false,
+}) {
+    const safeSessionIdPattern = /^[a-zA-Z0-9_.\-:]+$/;
+    if (sessionId && !safeSessionIdPattern.test(sessionId)) {
+        throw new Error('Invalid session ID');
+    }
+
+    if (isPlainShell && !initialCommand) {
+        return {
+            shellPath,
+            shellArgs: loginShell ? ['-li'] : ['-i'],
+            shellCommand: null,
+        };
+    }
+
+    let shellCommand;
+    if (isPlainShell) {
+        shellCommand = initialCommand;
+    } else if (provider === 'cursor') {
+        shellCommand = hasSession && sessionId
+            ? `cursor-agent --resume="${sessionId}"`
+            : 'cursor-agent';
+    } else if (provider === 'codex') {
+        shellCommand = hasSession && sessionId
+            ? `codex resume "${sessionId}" || codex`
+            : 'codex';
+    } else if (provider === 'gemini') {
+        const command = initialCommand || 'gemini';
+        shellCommand = hasSession && sessionId
+            ? `${command} --resume "${sessionId}"`
+            : command;
+    } else {
+        const command = initialCommand || 'claude';
+        shellCommand = hasSession && sessionId
+            ? `claude --resume "${sessionId}" || claude`
+            : command;
+    }
+
+    return {
+        shellPath,
+        shellArgs: loginShell ? ['-lc', shellCommand] : ['-c', shellCommand],
+        shellCommand,
+    };
+}
+
+function buildRemoteTerminalId({
+    userId,
+    projectName,
+    provider,
+    sessionId,
+    isPlainShell,
+    initialCommand,
+}) {
+    const payload = JSON.stringify({
+        userId: userId || null,
+        projectName,
+        provider,
+        sessionId: sessionId || null,
+        isPlainShell: Boolean(isPlainShell),
+        initialCommand: initialCommand || null,
+    });
+    return `ccui_${createHash('sha1').update(payload).digest('hex')}`;
 }
 
 // File system watchers for provider project/session folders
@@ -527,6 +663,7 @@ app.use('/api/sessions', authenticateToken, messagesRoutes);
 app.use('/api/agent', agentRoutes);
 app.use('/api/auth-center', authenticateToken, authCenterRoutes);
 app.use('/api/e2b', authenticateToken, e2bRoutes);
+app.use('/api/remote-hosts', authenticateToken, remoteHostsRoutes);
 
 // GitHub routes: OAuth authorize/callback are public, rest require auth
 app.use('/api/github', (req, res, next) => {
@@ -644,6 +781,7 @@ app.get('/api/projects/:projectName/sessions', authenticateToken, async (req, re
             provider: typeof provider === 'string' ? provider : 'claude',
             limit: parseInt(limit, 10),
             offset: parseInt(offset, 10),
+            userId: req.user?.id || null,
         });
         res.json(result);
     } catch (error) {
@@ -673,6 +811,14 @@ app.delete('/api/projects/:projectName/sessions/:sessionId', authenticateToken, 
             e2bSessionMessagesDb.deleteBySessionId(sessionId);
             e2bSessionDb.delete(sessionId);
             sessionNamesDb.deleteName(sessionId, 'e2b');
+            return res.json({ success: true });
+        }
+
+        if (isRemoteHostProjectName(projectName)) {
+            const remoteSession = remoteHostSessionsDb.getBySessionId(sessionId);
+            remoteHostSessionMessagesDb.deleteBySessionId(sessionId);
+            remoteHostSessionsDb.delete(sessionId);
+            sessionNamesDb.deleteName(sessionId, remoteSession?.provider || 'claude');
             return res.json({ success: true });
         }
 
@@ -1246,7 +1392,7 @@ wss.on('connection', (ws, request) => {
     const pathname = urlObj.pathname;
 
     if (pathname === '/shell') {
-        handleShellConnection(ws);
+        handleShellConnection(ws, request);
     } else if (pathname === '/ws') {
         handleChatConnection(ws, request);
     } else if (pathname.startsWith('/plugin-ws/')) {
@@ -1280,14 +1426,23 @@ function handleChatConnection(ws, request) {
                 console.log('📁 Project:', data.options?.projectPath || 'Unknown');
                 console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
 
-                // Use Claude Agents SDK
-                await queryClaudeSDK(data.command, data.options, commandWriter);
+                if (shouldUseRemoteHostChat(data)) {
+                    await queryRemoteHostChat('claude', data.command, data.options || {}, commandWriter, {
+                        userId: ws.userId,
+                    });
+                } else {
+                    // Use Claude Agents SDK
+                    await queryClaudeSDK(data.command, data.options, commandWriter);
+                }
             } else if (data.type === 'cursor-command') {
                 const commandWriter = writer.bindSession(data.options?.sessionId || data.sessionId || null);
                 console.log('[DEBUG] Cursor message:', data.command || '[Continue/Resume]');
                 console.log('📁 Project:', data.options?.cwd || 'Unknown');
                 console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
                 console.log('🤖 Model:', data.options?.model || 'default');
+                if (shouldUseRemoteHostChat(data)) {
+                    throw new Error('Remote host chat currently supports Claude and Codex. Use the Shell tab for Cursor.');
+                }
                 await spawnCursor(data.command, data.options, commandWriter);
             } else if (data.type === 'codex-command') {
                 const commandWriter = writer.bindSession(data.options?.sessionId || data.sessionId || null);
@@ -1295,13 +1450,22 @@ function handleChatConnection(ws, request) {
                 console.log('📁 Project:', data.options?.projectPath || data.options?.cwd || 'Unknown');
                 console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
                 console.log('🤖 Model:', data.options?.model || 'default');
-                await queryCodex(data.command, data.options, commandWriter);
+                if (shouldUseRemoteHostChat(data)) {
+                    await queryRemoteHostChat('codex', data.command, data.options || {}, commandWriter, {
+                        userId: ws.userId,
+                    });
+                } else {
+                    await queryCodex(data.command, data.options, commandWriter);
+                }
             } else if (data.type === 'gemini-command') {
                 const commandWriter = writer.bindSession(data.options?.sessionId || data.sessionId || null);
                 console.log('[DEBUG] Gemini message:', data.command || '[Continue/Resume]');
                 console.log('📁 Project:', data.options?.projectPath || data.options?.cwd || 'Unknown');
                 console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
                 console.log('🤖 Model:', data.options?.model || 'default');
+                if (shouldUseRemoteHostChat(data)) {
+                    throw new Error('Remote host chat currently supports Claude and Codex. Use the Shell tab for Gemini.');
+                }
                 await spawnGemini(data.command, data.options, commandWriter);
             } else if (data.type === 'e2b-command') {
                 console.log('[DEBUG] E2B message:', data.command || '[Continue/Resume]');
@@ -1426,7 +1590,9 @@ function handleChatConnection(ws, request) {
                 const provider = data.provider || 'claude';
                 let success;
 
-                if (provider === 'cursor') {
+                if (isRemoteHostChatSession(data.sessionId)) {
+                    success = abortRemoteHostSession(data.sessionId);
+                } else if (provider === 'cursor') {
                     success = abortCursorSession(data.sessionId);
                 } else if (provider === 'codex') {
                     success = abortCodexSession(data.sessionId);
@@ -1465,7 +1631,12 @@ function handleChatConnection(ws, request) {
                 const sessionId = data.sessionId;
                 let isActive;
 
-                if (provider === 'cursor') {
+                if (isRemoteHostChatSession(sessionId)) {
+                    isActive = isRemoteHostSessionActive(sessionId);
+                    if (isActive) {
+                        reconnectRemoteHostSessionWriter(sessionId, ws);
+                    }
+                } else if (provider === 'cursor') {
                     isActive = isCursorSessionActive(sessionId);
                     if (isActive) {
                         reconnectCursorSessionWriter(sessionId, ws);
@@ -1519,7 +1690,8 @@ function handleChatConnection(ws, request) {
                     cursor: getActiveCursorSessions(),
                     codex: getActiveCodexSessions(),
                     gemini: getActiveGeminiSessions(),
-                    e2b: getActiveE2BSessions()
+                    e2b: getActiveE2BSessions(),
+                    remoteHost: getActiveRemoteHostSessions(),
                 };
                 writer.send({
                     type: 'active-sessions',
@@ -1564,12 +1736,123 @@ function handleChatConnection(ws, request) {
 }
 
 // Handle shell WebSocket connections
-function handleShellConnection(ws) {
+function handleShellConnection(ws, request) {
     console.log('🐚 Shell client connected');
     let shellProcess = null;
     let ptySessionKey = null;
     let urlDetectionBuffer = '';
+    let remoteTerminalState = null;
     const announcedAuthUrls = new Set();
+
+    const stopRemotePolling = () => {
+        if (remoteTerminalState?.pollTimer) {
+            clearTimeout(remoteTerminalState.pollTimer);
+        }
+
+        if (remoteTerminalState) {
+            remoteTerminalState.pollTimer = null;
+            remoteTerminalState.pollActive = false;
+        }
+    };
+
+    const emitShellOutput = (chunk) => {
+        if (!chunk || ws.readyState !== WebSocket.OPEN) {
+            return;
+        }
+
+        let outputData = String(chunk);
+        const cleanChunk = stripAnsiSequences(outputData);
+        urlDetectionBuffer = `${urlDetectionBuffer}${cleanChunk}`.slice(-SHELL_URL_PARSE_BUFFER_LIMIT);
+
+        outputData = outputData.replace(
+            /OPEN_URL:\s*(https?:\/\/[^\s\x1b\x07]+)/g,
+            '[INFO] Opening in browser: $1'
+        );
+
+        const emitAuthUrl = (detectedUrl, autoOpen = false) => {
+            const normalizedUrl = normalizeDetectedUrl(detectedUrl);
+            if (!normalizedUrl) return;
+
+            const isNewUrl = !announcedAuthUrls.has(normalizedUrl);
+            if (isNewUrl) {
+                announcedAuthUrls.add(normalizedUrl);
+                ws.send(JSON.stringify({
+                    type: 'auth_url',
+                    url: normalizedUrl,
+                    autoOpen
+                }));
+            }
+        };
+
+        const normalizedDetectedUrls = extractUrlsFromText(urlDetectionBuffer)
+            .map((url) => normalizeDetectedUrl(url))
+            .filter(Boolean);
+
+        const dedupedDetectedUrls = Array.from(new Set(normalizedDetectedUrls)).filter((url, _, urls) =>
+            !urls.some((otherUrl) => otherUrl !== url && otherUrl.startsWith(url))
+        );
+
+        dedupedDetectedUrls.forEach((url) => emitAuthUrl(url, false));
+
+        if (shouldAutoOpenUrlFromOutput(cleanChunk) && dedupedDetectedUrls.length > 0) {
+            const bestUrl = dedupedDetectedUrls.reduce((longest, current) =>
+                current.length > longest.length ? current : longest
+            );
+            emitAuthUrl(bestUrl, true);
+        }
+
+        ws.send(JSON.stringify({
+            type: 'output',
+            data: outputData
+        }));
+    };
+
+    const scheduleRemotePoll = (delayMs = 150) => {
+        if (!remoteTerminalState?.pollActive) {
+            return;
+        }
+
+        remoteTerminalState.pollTimer = setTimeout(async () => {
+            if (!remoteTerminalState?.pollActive) {
+                return;
+            }
+
+            try {
+                const response = await remoteAgentRequestWithRecovery(
+                    remoteTerminalState.host,
+                    '/terminals/read',
+                    {
+                        terminalId: remoteTerminalState.terminalId,
+                        cursor: remoteTerminalState.cursor,
+                    },
+                    { timeoutMs: 30000 }
+                );
+
+                if (response.truncated) {
+                    emitShellOutput('\r\n\x1b[33m[Remote terminal backlog trimmed; showing latest buffered output]\x1b[0m\r\n');
+                }
+
+                if (response.output) {
+                    emitShellOutput(response.output);
+                }
+
+                if (Number.isFinite(response.nextCursor)) {
+                    remoteTerminalState.cursor = response.nextCursor;
+                }
+
+                if (response.closed && !remoteTerminalState.closedNotified) {
+                    remoteTerminalState.closedNotified = true;
+                    emitShellOutput(`\r\n\x1b[33mProcess exited with code ${response.exitCode ?? 0}${response.exitSignal ? ` (${response.exitSignal})` : ''}\x1b[0m\r\n`);
+                    stopRemotePolling();
+                    return;
+                }
+            } catch (error) {
+                console.error('[ERROR] Remote shell poll failed:', error.message);
+            }
+
+            scheduleRemotePoll(remoteTerminalState?.closedNotified ? 1000 : 150);
+        }, delayMs);
+    };
 
     ws.on('message', async (message) => {
         try {
@@ -1578,13 +1861,94 @@ function handleShellConnection(ws) {
 
             if (data.type === 'init') {
                 const projectPath = data.projectPath || process.cwd();
+                const projectName = data.projectName || null;
+                const projectRuntime = data.projectRuntime || 'local';
                 const sessionId = data.sessionId;
                 const hasSession = data.hasSession;
                 const provider = data.provider || 'claude';
                 const initialCommand = data.initialCommand;
                 const isPlainShell = data.isPlainShell || (!!initialCommand && !hasSession) || provider === 'plain-shell';
+                const userId = request?.user?.id ?? request?.user?.userId ?? null;
                 urlDetectionBuffer = '';
                 announcedAuthUrls.clear();
+                stopRemotePolling();
+                remoteTerminalState = null;
+
+                const providerName = provider === 'cursor'
+                    ? 'Cursor'
+                    : (provider === 'codex' ? 'Codex' : (provider === 'gemini' ? 'Gemini' : 'Claude'));
+                const welcomeMsg = isPlainShell
+                    ? `\x1b[36mStarting terminal in: ${projectPath}\x1b[0m\r\n`
+                    : (hasSession
+                        ? `\x1b[36mResuming ${providerName} session ${sessionId} in: ${projectPath}\x1b[0m\r\n`
+                        : `\x1b[36mStarting new ${providerName} session in: ${projectPath}\x1b[0m\r\n`);
+
+                ws.send(JSON.stringify({
+                    type: 'output',
+                    data: welcomeMsg
+                }));
+
+                if (projectRuntime === 'remote_host') {
+                    const adapter = await getProjectRuntimeAdapter(projectName, { userId });
+                    if (adapter.context.runtime !== 'remote_host') {
+                        throw new Error('Remote runtime context is unavailable');
+                    }
+
+                    const remotePlan = buildShellExecutionPlan({
+                        provider,
+                        hasSession,
+                        sessionId,
+                        initialCommand,
+                        isPlainShell,
+                        shellPath: '/bin/bash',
+                        loginShell: true,
+                    });
+
+                    const terminalId = buildRemoteTerminalId({
+                        userId,
+                        projectName,
+                        provider,
+                        sessionId,
+                        isPlainShell,
+                        initialCommand,
+                    });
+
+                    const termCols = data.cols || 80;
+                    const termRows = data.rows || 24;
+                    const openedTerminal = await remoteAgentRequestWithRecovery(
+                        adapter.context.remoteHost,
+                        '/terminals/open',
+                        {
+                            terminalId,
+                            cwd: adapter.context.projectRoot,
+                            shell: remotePlan.shellPath,
+                            shellArgs: remotePlan.shellArgs,
+                            env: {
+                                TERM: 'xterm-256color',
+                                COLORTERM: 'truecolor',
+                                FORCE_COLOR: '3',
+                            },
+                            cols: termCols,
+                            rows: termRows,
+                        },
+                    );
+
+                    remoteTerminalState = {
+                        terminalId,
+                        host: adapter.context.remoteHost,
+                        cursor: 0,
+                        pollTimer: null,
+                        pollActive: true,
+                        closedNotified: Boolean(openedTerminal.closed),
+                    };
+
+                    if (!openedTerminal.created) {
+                        emitShellOutput('\x1b[36m[Reconnected to existing remote session]\x1b[0m\r\n');
+                    }
+
+                    scheduleRemotePoll(0);
+                    return;
+                }
 
                 // Login commands (Claude/Cursor auth) should never reuse cached sessions
                 const isLoginCommand = initialCommand && (
@@ -1593,13 +1957,11 @@ function handleShellConnection(ws) {
                     initialCommand.includes('auth login')
                 );
 
-                // Include command hash in session key so different commands get separate sessions
                 const commandSuffix = isPlainShell && initialCommand
                     ? `_cmd_${Buffer.from(initialCommand).toString('base64').slice(0, 16)}`
                     : '';
                 ptySessionKey = `${projectPath}_${sessionId || 'default'}${commandSuffix}`;
 
-                // Kill any existing login session before starting fresh
                 if (isLoginCommand) {
                     const oldSession = ptySessionsMap.get(ptySessionKey);
                     if (oldSession) {
@@ -1633,7 +1995,6 @@ function handleShellConnection(ws) {
                     }
 
                     existingSession.ws = ws;
-
                     return;
                 }
 
@@ -1644,24 +2005,7 @@ function handleShellConnection(ws) {
                     console.log('⚡ Initial command:', initialCommand);
                 }
 
-                // First send a welcome message
-                let welcomeMsg;
-                if (isPlainShell) {
-                    welcomeMsg = `\x1b[36mStarting terminal in: ${projectPath}\x1b[0m\r\n`;
-                } else {
-                    const providerName = provider === 'cursor' ? 'Cursor' : (provider === 'codex' ? 'Codex' : (provider === 'gemini' ? 'Gemini' : 'Claude'));
-                    welcomeMsg = hasSession ?
-                        `\x1b[36mResuming ${providerName} session ${sessionId} in: ${projectPath}\x1b[0m\r\n` :
-                        `\x1b[36mStarting new ${providerName} session in: ${projectPath}\x1b[0m\r\n`;
-                }
-
-                ws.send(JSON.stringify({
-                    type: 'output',
-                    data: welcomeMsg
-                }));
-
                 try {
-                    // Validate projectPath — resolve to absolute and verify it exists
                     const resolvedProjectPath = path.resolve(projectPath);
                     try {
                         const stats = fs.statSync(resolvedProjectPath);
@@ -1673,29 +2017,22 @@ function handleShellConnection(ws) {
                         return;
                     }
 
-                    // Validate sessionId — only allow safe characters
                     const safeSessionIdPattern = /^[a-zA-Z0-9_.\-:]+$/;
                     if (sessionId && !safeSessionIdPattern.test(sessionId)) {
                         ws.send(JSON.stringify({ type: 'error', message: 'Invalid session ID' }));
                         return;
                     }
 
-                    // Build shell command — use cwd for project path (never interpolate into shell string)
                     let shellCommand;
                     if (isPlainShell) {
-                        // Plain shell mode - run the initial command in the project directory
                         shellCommand = initialCommand;
                     } else if (provider === 'cursor') {
-                        if (hasSession && sessionId) {
-                            shellCommand = `cursor-agent --resume="${sessionId}"`;
-                        } else {
-                            shellCommand = 'cursor-agent';
-                        }
+                        shellCommand = hasSession && sessionId
+                            ? `cursor-agent --resume="${sessionId}"`
+                            : 'cursor-agent';
                     } else if (provider === 'codex') {
-                        // Use codex command; attempt to resume and fall back to a new session when the resume fails.
                         if (hasSession && sessionId) {
                             if (os.platform() === 'win32') {
-                                // PowerShell syntax for fallback
                                 shellCommand = `codex resume "${sessionId}"; if ($LASTEXITCODE -ne 0) { codex }`;
                             } else {
                                 shellCommand = `codex resume "${sessionId}" || codex`;
@@ -1708,13 +2045,9 @@ function handleShellConnection(ws) {
                         let resumeId = sessionId;
                         if (hasSession && sessionId) {
                             try {
-                                // Gemini CLI enforces its own native session IDs, unlike other agents that accept arbitrary string names.
-                                // The UI only knows about its internal generated `sessionId` (e.g. gemini_1234).
-                                // We must fetch the mapping from the backend session manager to pass the native `cliSessionId` to the shell.
                                 const sess = sessionManager.getSession(sessionId);
                                 if (sess && sess.cliSessionId) {
                                     resumeId = sess.cliSessionId;
-                                    // Validate the looked-up CLI session ID too
                                     if (!safeSessionIdPattern.test(resumeId)) {
                                         resumeId = null;
                                     }
@@ -1724,13 +2057,10 @@ function handleShellConnection(ws) {
                             }
                         }
 
-                        if (hasSession && resumeId) {
-                            shellCommand = `${command} --resume "${resumeId}"`;
-                        } else {
-                            shellCommand = command;
-                        }
+                        shellCommand = hasSession && resumeId
+                            ? `${command} --resume "${resumeId}"`
+                            : command;
                     } else {
-                        // Claude (default provider)
                         const command = initialCommand || 'claude';
                         if (hasSession && sessionId) {
                             if (os.platform() === 'win32') {
@@ -1745,11 +2075,8 @@ function handleShellConnection(ws) {
 
                     console.log('🔧 Executing shell command:', shellCommand);
 
-                    // Use appropriate shell based on platform
                     const shell = os.platform() === 'win32' ? 'powershell.exe' : 'bash';
                     const shellArgs = os.platform() === 'win32' ? ['-Command', shellCommand] : ['-c', shellCommand];
-
-                    // Use terminal dimensions from client if provided, otherwise use defaults
                     const termCols = data.cols || 80;
                     const termRows = data.rows || 24;
                     console.log('📐 Using terminal dimensions:', termCols, 'x', termRows);
@@ -1779,72 +2106,22 @@ function handleShellConnection(ws) {
                         sessionId
                     });
 
-                    // Handle data output
-                    shellProcess.onData((data) => {
+                    shellProcess.onData((outputChunk) => {
                         const session = ptySessionsMap.get(ptySessionKey);
                         if (!session) return;
 
                         if (session.buffer.length < 5000) {
-                            session.buffer.push(data);
+                            session.buffer.push(outputChunk);
                         } else {
                             session.buffer.shift();
-                            session.buffer.push(data);
+                            session.buffer.push(outputChunk);
                         }
 
                         if (session.ws && session.ws.readyState === WebSocket.OPEN) {
-                            let outputData = data;
-
-                            const cleanChunk = stripAnsiSequences(data);
-                            urlDetectionBuffer = `${urlDetectionBuffer}${cleanChunk}`.slice(-SHELL_URL_PARSE_BUFFER_LIMIT);
-
-                            outputData = outputData.replace(
-                                /OPEN_URL:\s*(https?:\/\/[^\s\x1b\x07]+)/g,
-                                '[INFO] Opening in browser: $1'
-                            );
-
-                            const emitAuthUrl = (detectedUrl, autoOpen = false) => {
-                                const normalizedUrl = normalizeDetectedUrl(detectedUrl);
-                                if (!normalizedUrl) return;
-
-                                const isNewUrl = !announcedAuthUrls.has(normalizedUrl);
-                                if (isNewUrl) {
-                                    announcedAuthUrls.add(normalizedUrl);
-                                    session.ws.send(JSON.stringify({
-                                        type: 'auth_url',
-                                        url: normalizedUrl,
-                                        autoOpen
-                                    }));
-                                }
-
-                            };
-
-                            const normalizedDetectedUrls = extractUrlsFromText(urlDetectionBuffer)
-                                .map((url) => normalizeDetectedUrl(url))
-                                .filter(Boolean);
-
-                            // Prefer the most complete URL if shorter prefix variants are also present.
-                            const dedupedDetectedUrls = Array.from(new Set(normalizedDetectedUrls)).filter((url, _, urls) =>
-                                !urls.some((otherUrl) => otherUrl !== url && otherUrl.startsWith(url))
-                            );
-
-                            dedupedDetectedUrls.forEach((url) => emitAuthUrl(url, false));
-
-                            if (shouldAutoOpenUrlFromOutput(cleanChunk) && dedupedDetectedUrls.length > 0) {
-                                const bestUrl = dedupedDetectedUrls.reduce((longest, current) =>
-                                    current.length > longest.length ? current : longest
-                                );
-                                emitAuthUrl(bestUrl, true);
-                            }
-
-                            // Send regular output
-                            session.ws.send(JSON.stringify({
-                                type: 'output',
-                                data: outputData
-                            }));
+                            emitShellOutput(outputChunk);
                         }
                     });
 
-                    // Handle process exit
                     shellProcess.onExit((exitCode) => {
                         console.log('🔚 Shell process exited with code:', exitCode.exitCode, 'signal:', exitCode.signal);
                         const session = ptySessionsMap.get(ptySessionKey);
@@ -1870,8 +2147,12 @@ function handleShellConnection(ws) {
                 }
 
             } else if (data.type === 'input') {
-                // Send input to shell process
-                if (shellProcess && shellProcess.write) {
+                if (remoteTerminalState?.terminalId) {
+                    await remoteAgentRequestWithRecovery(remoteTerminalState.host, '/terminals/input', {
+                        terminalId: remoteTerminalState.terminalId,
+                        dataBase64: Buffer.from(String(data.data || ''), 'utf8').toString('base64'),
+                    });
+                } else if (shellProcess && shellProcess.write) {
                     try {
                         shellProcess.write(data.data);
                     } catch (error) {
@@ -1881,8 +2162,13 @@ function handleShellConnection(ws) {
                     console.warn('No active shell process to send input to');
                 }
             } else if (data.type === 'resize') {
-                // Handle terminal resize
-                if (shellProcess && shellProcess.resize) {
+                if (remoteTerminalState?.terminalId) {
+                    await remoteAgentRequestWithRecovery(remoteTerminalState.host, '/terminals/resize', {
+                        terminalId: remoteTerminalState.terminalId,
+                        cols: data.cols,
+                        rows: data.rows,
+                    });
+                } else if (shellProcess && shellProcess.resize) {
                     console.log('Terminal resize requested:', data.cols, 'x', data.rows);
                     shellProcess.resize(data.cols, data.rows);
                 }
@@ -1900,6 +2186,7 @@ function handleShellConnection(ws) {
 
     ws.on('close', () => {
         console.log('🔌 Shell client disconnected');
+        stopRemotePolling();
 
         if (ptySessionKey) {
             const session = ptySessionsMap.get(ptySessionKey);

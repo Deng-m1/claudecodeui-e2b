@@ -1,4 +1,4 @@
-import { Bell, Bot, Cloud, GitBranch, Key, KeyRound, ListChecks, Palette, Puzzle } from 'lucide-react';
+import { Bell, Bot, Cloud, GitBranch, Key, KeyRound, ListChecks, Palette, Puzzle, Server } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../../../lib/utils';
 import { PillBar, Pill } from '../../../shared/view/ui';
@@ -25,6 +25,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'plugins', labelKey: 'mainTabs.plugins', icon: Puzzle },
   { id: 'notifications', labelKey: 'mainTabs.notifications', icon: Bell },
   { id: 'e2b', labelKey: 'mainTabs.e2b', icon: Cloud },
+  { id: 'remoteHosts', labelKey: 'mainTabs.remoteHosts', icon: Server },
 ];
 
 export default function SettingsSidebar({ activeTab, onChange }: SettingsSidebarProps) {
@@ -42,6 +43,7 @@ export default function SettingsSidebar({ activeTab, onChange }: SettingsSidebar
             return (
               <button
                 key={item.id}
+                data-testid={`settings-tab-${item.id}`}
                 onClick={() => onChange(item.id)}
                 className={cn(
                   'flex items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium transition-colors duration-150',
@@ -71,6 +73,7 @@ export default function SettingsSidebar({ activeTab, onChange }: SettingsSidebar
               return (
                 <Pill
                   key={item.id}
+                  data-testid={`settings-tab-${item.id}-mobile`}
                   isActive={activeTab === item.id}
                   onClick={() => onChange(item.id)}
                   className="flex-shrink-0"

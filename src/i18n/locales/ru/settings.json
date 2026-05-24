@@ -106,7 +106,8 @@
     "apiTokens": "API и токены",
     "authCenter": "Центр авторизации",
     "tasks": "Задачи",
-    "plugins": "Плагины"
+    "plugins": "Плагины",
+    "remoteHosts": "Remote Hosts"
   },
   "authCenter": {
     "title": "Центр авторизации",

@@ -69,6 +69,7 @@ router.get('/:sessionId/messages', async (req, res) => {
         provider: typeof provider === 'string' ? provider : 'claude',
         projectName: typeof projectName === 'string' ? projectName : '',
         projectPath: typeof projectPath === 'string' ? projectPath : '',
+        userId: req.user?.id || null,
       },
       req.query,
     );

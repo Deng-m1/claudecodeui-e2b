@@ -213,7 +213,16 @@
       "hint": "Agent runs in a remote E2B cloud sandbox with full git access",
       "loading": "Loading...",
       "noRepos": "No repositories found"
+    },
+    "remoteHost": {
+      "title": "Remote Host Project",
+      "start": "Remote Host Session",
+      "description": "Chat runs the remote host's own Claude or Codex CLI and resumes against the remote machine's native session files."
     }
+  },
+  "remoteHost": {
+    "unsupportedProvider": "Remote host chat currently supports Claude and Codex. Use the Shell tab for other CLIs.",
+    "runningStatus": "Running on remote host"
   },
   "session": {
     "continue": {

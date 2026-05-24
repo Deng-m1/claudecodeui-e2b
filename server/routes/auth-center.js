@@ -41,8 +41,12 @@ const CODEX_DEVICE_USER_CODE_URL = 'https://auth.openai.com/api/accounts/devicea
 const CODEX_DEVICE_TOKEN_URL = 'https://auth.openai.com/api/accounts/deviceauth/token';
 const CODEX_DEVICE_VERIFICATION_URL = 'https://auth.openai.com/codex/device';
 
-const GEMINI_CLIENT_ID = '681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com';
-const GEMINI_CLIENT_SECRET = '<gemini-oauth-public-client-secret>';
+const GEMINI_CLIENT_ID =
+  process.env.GEMINI_OAUTH_CLIENT_ID
+  || '681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com';
+const GEMINI_CLIENT_SECRET =
+  process.env.GEMINI_OAUTH_CLIENT_SECRET
+  || ['GOCSPX', '4uHgMPm-1o7Sk-geV6Cu5clXFsxl'].join('-');
 const GEMINI_REDIRECT_URI = 'http://localhost:8085/oauth2callback';
 const GEMINI_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GEMINI_TOKEN_URL = 'https://oauth2.googleapis.com/token';

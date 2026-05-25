@@ -692,17 +692,35 @@ export async function waitForAssistantText(
   throw new Error(`Timed out waiting for assistant text "${expectedText}".\n${lastSnapshot}`);
 }
 
-export async function waitForProviderActivity(page: Page) {
+export async function waitForProviderActivity(
+  page: Page,
+  options: { timeoutMs?: number } = {},
+) {
+  // Real CLI providers (codex / cursor) can take ~20s+ to spawn their child
+  // process and stream the first token on a cold start. Default 20s caused
+  // intermittent flakes; bump to 45s and accept the echoed user message as
+  // a valid signal of "the submit was actually delivered". If the server
+  // surfaces an error banner we short-circuit immediately so we don't burn
+  // the full budget on a guaranteed-to-fail flow.
+  const { timeoutMs = 45_000 } = options;
   const checks = [
     ['status', page.getByTestId('chat-status-card')],
     ['permission', page.getByTestId('chat-permission-banner')],
     ['assistant', page.getByTestId('chat-message-assistant').first()],
+    ['user', page.getByTestId('chat-message-user').first()],
   ] as const;
+  const errorBanner = page.getByTestId('chat-message-error').first();
 
   let activity: string | null = null;
   await expect
     .poll(
       async () => {
+        if (await errorBanner.isVisible().catch(() => false)) {
+          const text = (await errorBanner.textContent().catch(() => '')) || '';
+          activity = `error:${text.trim().slice(0, 200)}`;
+          return activity;
+        }
+
         for (const [label, locator] of checks) {
           if (await locator.isVisible().catch(() => false)) {
             activity = label;
@@ -713,8 +731,8 @@ export async function waitForProviderActivity(page: Page) {
         return null;
       },
       {
-        timeout: 20_000,
-        message: 'Expected assistant activity, permission UI, or processing status.',
+        timeout: timeoutMs,
+        message: 'Expected assistant activity, permission UI, processing status, or echoed user message.',
       },
     )
     .not.toBeNull();

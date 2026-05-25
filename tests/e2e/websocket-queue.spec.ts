@@ -1,7 +1,17 @@
 import { expect, test } from '@playwright/test';
 import { waitForAuthenticatedShell } from './support/app';
+import { appUrl } from './support/config';
 
 const now = new Date().toISOString();
+
+// Vite hot-shuffles the port (5179 → 5180/5181…) when another instance is
+// already bound, so derive the websocket URL from whatever the harness asked
+// Playwright to drive instead of hard-coding 5179.
+function expectedWsUrl(token: string): string {
+  const url = new URL(appUrl);
+  const wsScheme = url.protocol === 'https:' ? 'wss' : 'ws';
+  return `${wsScheme}://${url.host}/ws?token=${token}`;
+}
 
 test.describe('websocket auth lifecycle', () => {
   test.use({ storageState: { cookies: [], origins: [] } });
@@ -115,7 +125,7 @@ test.describe('websocket auth lifecycle', () => {
 
     await expect
       .poll(async () => page.evaluate(() => window.__wsAuthHarness.urls()))
-      .toContain('ws://127.0.0.1:5179/ws?token=test-token-after-login');
+      .toContain(expectedWsUrl('test-token-after-login'));
   });
 });
 

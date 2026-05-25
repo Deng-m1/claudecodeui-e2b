@@ -24,7 +24,10 @@ test('sidebar renders live local and cloud project sections and supports cloud m
   const liveProjects = await fetchLiveProjects(page);
   const localProjects = liveProjects.filter((project) => project.runtime !== 'e2b');
   const cloudProjects = liveProjects.filter((project) => project.runtime === 'e2b');
-  const liveNames = liveProjects.map((project) => project.name).sort();
+  // The backend can return multiple project rows that share the same
+  // `name` when an old E2B sandbox was reused across captures. The sidebar
+  // collapses them to a single entry, so dedupe the expectation too.
+  const liveNames = Array.from(new Set(liveProjects.map((project) => project.name))).sort();
 
   expect(localProjects.length).toBeGreaterThan(0);
   expect(cloudProjects.length).toBeGreaterThan(0);
@@ -63,7 +66,7 @@ test('sidebar preserves cloud projects when a local-only realtime projects_updat
   expect(cloudProjects.length).toBeGreaterThan(0);
   expect(localProjects.length).toBeGreaterThan(0);
 
-  const expectedNames = liveProjects.map((project) => project.name).sort();
+  const expectedNames = Array.from(new Set(liveProjects.map((project) => project.name))).sort();
 
   await injectProjectsUpdated(page, localProjects, {
     watchProvider: 'claude',

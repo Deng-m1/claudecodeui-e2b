@@ -5,6 +5,7 @@ import {
   waitForAssistantText,
   waitForAuthenticatedShell,
 } from './support/app';
+import { isLiveCloudEnabled } from './support/config';
 
 const EXACT_REPLY_PROMPT = 'Reply with exactly HELLO_WORLD and nothing else.';
 const SAVED_PROFILE_NAME = 'Codex Callback Login 2026-03-31 10:02';
@@ -35,6 +36,11 @@ async function runCodexCloudAuthFlow(
 }
 
 test.describe.serial('codex cloud auth paths', () => {
+  test.skip(
+    !isLiveCloudEnabled('codex-cloud'),
+    'Set E2E_LIVE_CLOUD=codex-cloud (or =all) to run these live Codex cloud auth flows.',
+  );
+
   test('host snapshot auth launches cloud codex and returns text', async ({ page }) => {
     test.setTimeout(10 * 60 * 1000);
     await runCodexCloudAuthFlow(page, { authMode: 'auto' });

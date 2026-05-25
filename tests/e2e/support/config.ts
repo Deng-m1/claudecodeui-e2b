@@ -1,3 +1,6 @@
+// Default to the Vite dev port (5179). When another instance already binds
+// that port Vite walks up to 5180/5181; CI/dev should pass `E2E_APP_URL` to
+// match, but the default keeps the historical behaviour for fresh checkouts.
 const DEFAULT_APP_URL = 'http://127.0.0.1:5179';
 const DEFAULT_API_URL = 'http://127.0.0.1:3111';
 
@@ -25,6 +28,38 @@ export function getProviderMatrix(): string[] {
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean);
+}
+
+// `e2b-*` and `codex-cloud-*` spec files spawn real cloud sandboxes (E2B +
+// Codex/Claude) and consume real model credits per run. They sit behind an
+// opt-in flag so the default Playwright run stays fully hermetic. Set
+// `E2E_LIVE_CLOUD=1` (or `true`/`yes`) to enable them in CI/dev environments
+// that have the necessary auth + sandbox quota configured.
+export function isLiveCloudE2EEnabled(): boolean {
+  const raw = process.env.E2E_LIVE_CLOUD?.trim().toLowerCase();
+  if (!raw) {
+    return false;
+  }
+
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
+// Tests that spin up real E2B sandboxes and call live Codex/Claude models can
+// each consume 10–15 minutes of CI time and require working cloud credentials,
+// so we keep them opt-in. Set `E2E_LIVE_CLOUD=1` (or pass a CSV in
+// `E2E_LIVE_CLOUD`, e.g. `e2b,codex-cloud`) to enable a specific tag, or `=all`
+// to enable every live-cloud suite at once. When the gate is closed we tell
+// Playwright to skip the suite rather than letting it hit a 10-minute timeout.
+export function isLiveCloudEnabled(tag?: string): boolean {
+  const raw = process.env.E2E_LIVE_CLOUD?.trim().toLowerCase();
+  if (!raw) return false;
+  if (raw === '1' || raw === 'true' || raw === 'all' || raw === 'yes') return true;
+  if (!tag) return true;
+  return raw
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .includes(tag.toLowerCase());
 }
 
 export type RemoteHostE2EConfig = {

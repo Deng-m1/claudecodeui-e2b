@@ -5,6 +5,7 @@ import {
   waitForAuthenticatedShell,
   waitForProviderActivity,
 } from './support/app';
+import { isLiveCloudEnabled } from './support/config';
 
 const TURN_ONE_PROMPT = 'Reply with exactly CLOUD_TURN_ONE_OK and nothing else.';
 const TURN_TWO_PROMPT = [
@@ -44,6 +45,10 @@ async function waitForSessionHistoryText(page: Page, sessionId: string, expected
 }
 
 test('e2b codex supports multi-turn history and survives reload while the next turn is active', async ({ page }) => {
+  test.skip(
+    !isLiveCloudEnabled('e2b'),
+    'Set E2E_LIVE_CLOUD=e2b (or =all) to run live E2B reconnect/replay tests.',
+  );
   test.setTimeout(15 * 60 * 1000);
 
   await page.goto('/');

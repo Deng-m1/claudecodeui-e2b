@@ -5,10 +5,15 @@ import {
   waitForAssistantText,
   waitForAuthenticatedShell,
 } from './support/app';
+import { isLiveCloudEnabled } from './support/config';
 
 const EXACT_REPLY_PROMPT = 'Reply with exactly HELLO_WORLD and nothing else.';
 
 test('e2b codex persists history locally and restores it after reload', async ({ page }) => {
+  test.skip(
+    !isLiveCloudEnabled('e2b'),
+    'Set E2E_LIVE_CLOUD=e2b (or =all) to run live E2B sandbox + Codex history tests.',
+  );
   test.setTimeout(10 * 60 * 1000);
 
   await page.goto('/');

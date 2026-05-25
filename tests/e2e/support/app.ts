@@ -47,19 +47,20 @@ type StartCloudProjectOptions = {
 };
 
 export async function waitForAuthenticatedShell(page: Page) {
-  // On mobile viewports the sidebar drawer is collapsed by default; the root
-  // element is rendered in the DOM but kept off-screen until the user taps the
-  // hamburger menu. Wait for the element to attach (proving the authenticated
-  // shell mounted), then automatically open the drawer on mobile so subsequent
-  // sidebar helpers (which depend on `:visible` locators) keep working.
+  // Desktop: the sidebar is always visible once the shell mounts, so just
+  // wait for `sidebar-root` to become visible (this is what the test harness
+  // historically relied on, and it has the most forgiving polling cadence).
+  // Mobile: the drawer is rendered but kept off-screen until the user taps
+  // the hamburger menu, so wait for the root to attach, then tap the menu
+  // button so subsequent `:visible` locators still find the sidebar.
   const viewport = page.viewportSize();
-  const sidebarRoot = page.getByTestId('sidebar-root');
-  await sidebarRoot.waitFor({ state: 'attached', timeout: 15_000 });
-
   const isDesktopViewport = !viewport || viewport.width >= 768;
+  const sidebarRoot = page.getByTestId('sidebar-root');
+
   if (isDesktopViewport) {
     await expect(sidebarRoot).toBeVisible();
   } else {
+    await sidebarRoot.waitFor({ state: 'attached', timeout: 15_000 });
     const menuButton = page.getByTestId('mobile-menu-button').first();
     if (await menuButton.isVisible().catch(() => false)) {
       await menuButton.click();

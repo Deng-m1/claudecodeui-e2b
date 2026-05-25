@@ -301,11 +301,15 @@ test('provider-filtered load more requests the current provider for local and cl
 
   await ensureProjectExpanded(page, localProject.name);
   await page.locator(`[data-testid="sidebar-load-more-sessions"][data-project-name="${localProject.name}"]:visible`).click();
-  await expect(page.locator('[data-testid="sidebar-session-item"][data-session-id="local-codex-2"]')).toBeVisible();
+  await expect(
+    page.locator('[data-testid="sidebar-session-item"][data-session-id="local-codex-2"]:visible').first(),
+  ).toBeVisible();
 
   await ensureProjectExpanded(page, cloudProject.name);
   await page.locator(`[data-testid="sidebar-load-more-sessions"][data-project-name="${cloudProject.name}"]:visible`).click();
-  await expect(page.locator('[data-testid="sidebar-session-item"][data-session-id="cloud-codex-2"]')).toBeVisible();
+  await expect(
+    page.locator('[data-testid="sidebar-session-item"][data-session-id="cloud-codex-2"]:visible').first(),
+  ).toBeVisible();
 
   expect(requestLog.some((entry) => entry.includes(`${encodeURIComponent(localProject.name)}/sessions`) && entry.includes('provider=codex'))).toBe(true);
   expect(requestLog.some((entry) => entry.includes(`${encodeURIComponent(cloudProject.name)}/sessions`) && entry.includes('provider=codex'))).toBe(true);
@@ -478,10 +482,16 @@ test('older inactive Codex sessions stay in the sidebar after a project refresh 
 
   await setSidebarProviderFilter(page, 'codex');
   await ensureProjectExpanded(page, project.name);
-  await expect(page.locator('[data-testid="sidebar-session-item"][data-session-id="older-codex-session"]')).toBeVisible();
+  await expect(
+    page.locator('[data-testid="sidebar-session-item"][data-session-id="older-codex-session"]:visible').first(),
+  ).toBeVisible();
 
   await page.evaluate(() => window.refreshProjects?.());
 
-  await expect(page.locator('[data-testid="sidebar-session-item"][data-session-id="older-codex-session"]')).toBeVisible();
-  await expect(page.locator('[data-testid="sidebar-session-item"][data-session-id="recent-codex-session"]')).toBeVisible();
+  await expect(
+    page.locator('[data-testid="sidebar-session-item"][data-session-id="older-codex-session"]:visible').first(),
+  ).toBeVisible();
+  await expect(
+    page.locator('[data-testid="sidebar-session-item"][data-session-id="recent-codex-session"]:visible').first(),
+  ).toBeVisible();
 });

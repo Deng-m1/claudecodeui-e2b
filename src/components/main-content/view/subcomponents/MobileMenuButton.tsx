@@ -10,6 +10,7 @@ export default function MobileMenuButton({ onMenuClick, compact = false }: Mobil
 
   return (
     <button
+      data-testid="mobile-menu-button"
       onClick={handleMobileMenuClick}
       onTouchEnd={handleMobileMenuTouchEnd}
       className={buttonClasses}

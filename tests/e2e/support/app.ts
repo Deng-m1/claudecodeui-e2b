@@ -47,7 +47,26 @@ type StartCloudProjectOptions = {
 };
 
 export async function waitForAuthenticatedShell(page: Page) {
-  await expect(page.getByTestId('sidebar-root')).toBeVisible();
+  // On mobile viewports the sidebar drawer is collapsed by default; the root
+  // element is rendered in the DOM but kept off-screen until the user taps the
+  // hamburger menu. Wait for the element to attach (proving the authenticated
+  // shell mounted), then automatically open the drawer on mobile so subsequent
+  // sidebar helpers (which depend on `:visible` locators) keep working.
+  const viewport = page.viewportSize();
+  const sidebarRoot = page.getByTestId('sidebar-root');
+  await sidebarRoot.waitFor({ state: 'attached', timeout: 15_000 });
+
+  const isDesktopViewport = !viewport || viewport.width >= 768;
+  if (isDesktopViewport) {
+    await expect(sidebarRoot).toBeVisible();
+  } else {
+    const menuButton = page.getByTestId('mobile-menu-button').first();
+    if (await menuButton.isVisible().catch(() => false)) {
+      await menuButton.click();
+      await expect(sidebarRoot).toBeVisible({ timeout: 5_000 });
+    }
+  }
+
   await expect(page.getByTestId('sidebar-projects-loading')).toBeHidden({ timeout: 30_000 }).catch(() => {});
   await expect(page.getByTestId('main-content-loading')).toBeHidden({ timeout: 30_000 }).catch(() => {});
 }
@@ -146,8 +165,25 @@ export async function setSidebarProviderFilter(page: Page, provider: 'all' | 'cl
 }
 
 export async function getVisibleSidebarSessionIds(page: Page) {
+  // The sidebar renders mobile and desktop variants of every session item with
+  // the same `data-testid` and `data-session-id`, hiding the unused variant via
+  // CSS. evaluateAll would otherwise return both variants and produce
+  // duplicates that break expected-list assertions, so we explicitly filter to
+  // the visible variant (using getBoundingClientRect rather than `:visible`
+  // because evaluateAll runs in the browser context).
   return page.locator('[data-testid="sidebar-session-item"]').evaluateAll((elements) => {
+    const isVisible = (element: HTMLElement) => {
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        return false;
+      }
+
+      const style = window.getComputedStyle(element);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    };
+
     const ids = elements
+      .filter((element) => isVisible(element as HTMLElement))
       .map((element) => (element as HTMLElement).dataset.sessionId || '')
       .filter(Boolean);
 

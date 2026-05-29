@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { FolderOpen, FolderPlus, Loader2, Plus, RefreshCw, Server, Trash2 } from 'lucide-react';
+import { Check, Edit3, FolderOpen, FolderPlus, Loader2, Plus, RefreshCw, Server, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { api, parseApiJson } from '../../../../../utils/api';
 import { Badge, Button, Input } from '../../../../../shared/view/ui';
@@ -300,6 +300,8 @@ export default function RemoteHostsSettingsTab() {
   const [testResult, setTestResult] = useState<RemoteHostTestResult | null>(null);
   const [bootstrapResult, setBootstrapResult] = useState<RemoteHostBootstrapResult | null>(null);
   const [workspaceBrowser, setWorkspaceBrowser] = useState<WorkspaceBrowserState | null>(null);
+  const [renamingWorkspaceId, setRenamingWorkspaceId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState<string>('');
 
   const fetchHosts = useCallback(async () => {
     try {
@@ -594,6 +596,48 @@ export default function RemoteHostsSettingsTab() {
       await fetchHosts();
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : 'Failed to delete remote workspace');
+    } finally {
+      setBusyHostId(null);
+    }
+  };
+
+  const startRenameWorkspace = (workspace: RemoteWorkspace) => {
+    resetTransientState();
+    setRenamingWorkspaceId(workspace.id);
+    setRenameDraft(workspace.displayName || '');
+  };
+
+  const cancelRenameWorkspace = () => {
+    setRenamingWorkspaceId(null);
+    setRenameDraft('');
+  };
+
+  const saveRenameWorkspace = async (workspaceId: string) => {
+    try {
+      setBusyHostId(workspaceId);
+      resetTransientState();
+      const trimmed = renameDraft.trim();
+      const response = await api.remoteHosts.updateWorkspace(workspaceId, {
+        displayName: trimmed === '' ? null : trimmed,
+      });
+      const payload = await parseApiJson(response, 'Failed to rename remote workspace');
+      if (!response.ok) {
+        throw new Error(payload?.error || 'Failed to rename remote workspace');
+      }
+
+      setMessage(
+        t('remoteHosts.messages.renameWorkspaceSuccess', {
+          defaultValue: 'Remote workspace renamed.',
+        }),
+      );
+      setRenamingWorkspaceId(null);
+      setRenameDraft('');
+      await fetchHosts();
+      if (typeof window !== 'undefined' && typeof window.refreshProjects === 'function') {
+        void window.refreshProjects();
+      }
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : 'Failed to rename remote workspace');
     } finally {
       setBusyHostId(null);
     }
@@ -1249,25 +1293,95 @@ export default function RemoteHostsSettingsTab() {
                       {t('remoteHosts.saved.emptyWorkspaces', { defaultValue: 'No workspace roots registered for this host yet.' })}
                     </div>
                   ) : (
-                    host.workspaces.map((workspace) => (
-                      <div key={workspace.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/70 bg-background/80 p-3">
-                        <div className="min-w-0">
-                          <div className="text-sm font-medium text-foreground">
-                            {workspace.displayName || workspace.workspaceRoot}
-                          </div>
-                          <div className="truncate text-xs text-muted-foreground">{workspace.workspaceRoot}</div>
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDeleteWorkspace(workspace.id)}
-                          disabled={busyHostId === workspace.id}
+                    host.workspaces.map((workspace) => {
+                      const isRenaming = renamingWorkspaceId === workspace.id;
+                      const isBusy = busyHostId === workspace.id;
+
+                      return (
+                        <div
+                          key={workspace.id}
+                          data-testid="remote-hosts-saved-workspace"
+                          data-workspace-id={workspace.id}
+                          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/70 bg-background/80 p-3"
                         >
-                          {busyHostId === workspace.id ? <Loader2 className="animate-spin" /> : <Trash2 />}
-                          {t('remoteHosts.actions.deleteWorkspace', { defaultValue: 'Delete' })}
-                        </Button>
-                      </div>
-                    ))
+                          <div className="min-w-0 flex-1">
+                            {isRenaming ? (
+                              <div className="flex items-center gap-2">
+                                <Input
+                                  data-testid="remote-hosts-workspace-rename-input"
+                                  autoFocus
+                                  value={renameDraft}
+                                  onChange={(event) => setRenameDraft(event.target.value)}
+                                  placeholder={t('remoteHosts.actions.aliasPlaceholder', {
+                                    defaultValue: 'Optional alias (e.g. gpu)',
+                                  })}
+                                  onKeyDown={(event) => {
+                                    if (event.key === 'Enter') {
+                                      void saveRenameWorkspace(workspace.id);
+                                    } else if (event.key === 'Escape') {
+                                      cancelRenameWorkspace();
+                                    }
+                                  }}
+                                  className="h-8 max-w-xs"
+                                />
+                                <Button
+                                  data-testid="remote-hosts-workspace-rename-save"
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-8 w-8 p-0"
+                                  onClick={() => void saveRenameWorkspace(workspace.id)}
+                                  disabled={isBusy}
+                                  title={t('remoteHosts.actions.save', { defaultValue: 'Save' })}
+                                >
+                                  {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4 text-emerald-600" />}
+                                </Button>
+                                <Button
+                                  data-testid="remote-hosts-workspace-rename-cancel"
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-8 w-8 p-0"
+                                  onClick={cancelRenameWorkspace}
+                                  disabled={isBusy}
+                                  title={t('remoteHosts.actions.cancel', { defaultValue: 'Cancel' })}
+                                >
+                                  <X className="h-4 w-4 text-muted-foreground" />
+                                </Button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-2">
+                                <div className="min-w-0">
+                                  <div className="truncate text-sm font-medium text-foreground" title={workspace.displayName || workspace.workspaceRoot}>
+                                    {workspace.displayName || workspace.workspaceRoot}
+                                  </div>
+                                  <div className="truncate text-xs text-muted-foreground" title={workspace.workspaceRoot}>
+                                    {workspace.workspaceRoot}
+                                  </div>
+                                </div>
+                                <Button
+                                  data-testid="remote-hosts-workspace-rename"
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-7 w-7 flex-shrink-0 p-0"
+                                  onClick={() => startRenameWorkspace(workspace)}
+                                  title={t('remoteHosts.actions.renameWorkspace', { defaultValue: 'Rename alias' })}
+                                >
+                                  <Edit3 className="h-3.5 w-3.5 text-muted-foreground" />
+                                </Button>
+                              </div>
+                            )}
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleDeleteWorkspace(workspace.id)}
+                            disabled={isBusy || isRenaming}
+                          >
+                            {isBusy && !isRenaming ? <Loader2 className="animate-spin" /> : <Trash2 />}
+                            {t('remoteHosts.actions.deleteWorkspace', { defaultValue: 'Delete' })}
+                          </Button>
+                        </div>
+                      );
+                    })
                   )}
 
                   <div className="flex flex-col gap-2 sm:flex-row">

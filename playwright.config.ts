@@ -1,6 +1,9 @@
 import { defineConfig, devices } from '@playwright/test';
 
 const appUrl = process.env.E2E_APP_URL || 'http://127.0.0.1:5179';
+const apiUrl = process.env.E2E_API_URL || 'http://127.0.0.1:3111';
+const appPort = new URL(appUrl).port || '5179';
+const apiPort = new URL(apiUrl).port || '3111';
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -28,10 +31,26 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
   ],
-  webServer: {
-    command: 'npm run dev',
-    url: appUrl,
-    reuseExistingServer: true,
-    timeout: 120_000,
-  },
+  webServer: [
+    {
+      command: 'npm run server',
+      url: apiUrl,
+      reuseExistingServer: true,
+      timeout: 120_000,
+      env: {
+        ...process.env,
+        SERVER_PORT: apiPort,
+      },
+    },
+    {
+      command: 'npm run client',
+      url: appUrl,
+      reuseExistingServer: true,
+      timeout: 120_000,
+      env: {
+        ...process.env,
+        VITE_PORT: appPort,
+      },
+    },
+  ],
 });

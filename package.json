@@ -25,6 +25,7 @@
   },
   "scripts": {
     "dev": "concurrently --kill-others \"npm run server\" \"npm run client\"",
+    "dev:full": "node scripts/dev-full.js",
     "server": "node server/index.js",
     "server:watch": "node --watch server/index.js",
     "server:restart": "bash scripts/restart-backend.sh",
@@ -100,7 +101,7 @@
     "mime-types": "^3.0.1",
     "multer": "^2.0.1",
     "node-fetch": "^2.7.0",
-    "node-pty": "^1.1.0-beta34",
+    "node-pty": "^1.2.0-beta.12",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-dropzone": "^14.2.3",

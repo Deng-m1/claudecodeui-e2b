@@ -31,6 +31,7 @@ export default function AppContent() {
   } = useSessionProtection();
 
   const {
+    projects,
     selectedProject,
     selectedSession,
     activeTab,
@@ -44,7 +45,9 @@ export default function AppContent() {
     setShowSettings,
     openSettings,
     refreshProjectsSilently,
+    refreshProjectsBackground,
     sidebarSharedProps,
+    handleProjectSelect,
   } = useProjectsState({
     sessionId,
     navigate,
@@ -55,16 +58,21 @@ export default function AppContent() {
   });
 
   useEffect(() => {
-    // Expose a non-blocking refresh for chat/session flows.
-    // Full loading refreshes are still available through direct fetchProjects calls.
+    // Expose an immediate sidebar refresh for user-driven flows.
     window.refreshProjects = refreshProjectsSilently;
+    // Background chat/bootstrap refreshes use a coalesced variant to avoid bursty
+    // `/api/projects` fetches when session creation and route hydration overlap.
+    window.refreshProjectsBackground = refreshProjectsBackground;
 
     return () => {
       if (window.refreshProjects === refreshProjectsSilently) {
         delete window.refreshProjects;
       }
+      if (window.refreshProjectsBackground === refreshProjectsBackground) {
+        delete window.refreshProjectsBackground;
+      }
     };
-  }, [refreshProjectsSilently]);
+  }, [refreshProjectsBackground, refreshProjectsSilently]);
 
   useEffect(() => {
     window.openSettings = openSettings;
@@ -93,7 +101,7 @@ export default function AppContent() {
 
       setActiveTab('chat');
       setSidebarOpen(false);
-      void refreshProjectsSilently();
+      void refreshProjectsBackground();
 
       if (typeof message.sessionId === 'string' && message.sessionId) {
         navigate(`/session/${message.sessionId}`);
@@ -108,7 +116,7 @@ export default function AppContent() {
     return () => {
       navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage);
     };
-  }, [navigate, refreshProjectsSilently, setActiveTab, setSidebarOpen]);
+  }, [navigate, refreshProjectsBackground, setActiveTab, setSidebarOpen]);
 
   // Permission recovery: query pending permissions on WebSocket reconnect or session change
   useEffect(() => {
@@ -188,6 +196,14 @@ export default function AppContent() {
           onNavigateToSession={(targetSessionId: string) => navigate(`/session/${targetSessionId}`)}
           onShowSettings={() => setShowSettings(true)}
           externalMessageUpdate={externalMessageUpdate}
+          projects={projects}
+          onProjectSelect={handleProjectSelect}
+          onOpenSessionLauncher={() => {
+            if (typeof window !== 'undefined' && typeof window.openProjectLauncher === 'function') {
+              window.openProjectLauncher();
+            }
+          }}
+          onOpenRemoteHostSettings={() => openSettings('remoteHosts')}
         />
       </div>
 

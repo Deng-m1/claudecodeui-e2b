@@ -186,6 +186,11 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(payload),
       }),
+    updateWorkspace: (workspaceId, payload) =>
+      authenticatedFetch(`/api/remote-hosts/workspaces/${encodeURIComponent(workspaceId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      }),
     deleteWorkspace: (workspaceId) =>
       authenticatedFetch(`/api/remote-hosts/workspaces/${encodeURIComponent(workspaceId)}`, {
         method: 'DELETE',

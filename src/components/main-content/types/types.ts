@@ -57,6 +57,10 @@ export type MainContentProps = {
   onNavigateToSession: (targetSessionId: string) => void;
   onShowSettings: () => void;
   externalMessageUpdate: number;
+  projects: Project[];
+  onProjectSelect: (project: Project) => void;
+  onOpenSessionLauncher: () => void;
+  onOpenRemoteHostSettings: () => void;
 };
 
 export type MainContentHeaderProps = {
@@ -73,6 +77,10 @@ export type MainContentStateViewProps = {
   mode: 'loading' | 'empty';
   isMobile: boolean;
   onMenuClick: () => void;
+  projects?: Project[];
+  onProjectSelect?: (project: Project) => void;
+  onOpenSessionLauncher?: () => void;
+  onOpenRemoteHostSettings?: () => void;
 };
 
 export type MobileMenuButtonProps = {

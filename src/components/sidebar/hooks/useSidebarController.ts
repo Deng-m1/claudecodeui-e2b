@@ -135,6 +135,17 @@ export function useSidebarController({
   const [editingName, setEditingName] = useState('');
   const [loadingSessions, setLoadingSessions] = useState<LoadingSessionsByProject>({});
   const [additionalSessions, setAdditionalSessions] = useState<AdditionalSessionsByProject>({});
+  const [expandedRemoteHosts, setExpandedRemoteHosts] = useState<Set<string>>(() => {
+    if (typeof window === 'undefined') return new Set();
+    try {
+      const raw = window.localStorage.getItem('sidebar-expanded-remote-hosts');
+      if (!raw) return new Set();
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? new Set(parsed.filter((value) => typeof value === 'string')) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
   const [initialSessionsLoaded, setInitialSessionsLoaded] = useState<Set<string>>(new Set());
   const [currentTime, setCurrentTime] = useState(new Date());
   const [projectSortOrder, setProjectSortOrder] = useState<ProjectSortOrder>('name');
@@ -654,6 +665,36 @@ export function useSidebarController({
     (project: Project) => {
       onProjectSelect(project);
       setCurrentProject(project);
+      try {
+        const STORAGE_KEY = 'recent-projects';
+        const MAX_ENTRIES = 8;
+        const raw = window.localStorage.getItem(STORAGE_KEY);
+        const parsed: Array<{ projectName: string; lastSelectedAt: number }> = (() => {
+          if (!raw) return [];
+          try {
+            const data = JSON.parse(raw);
+            return Array.isArray(data) ? data : [];
+          } catch {
+            return [];
+          }
+        })();
+        const next = [
+          {
+            projectName: project.name,
+            displayName: project.displayName,
+            runtime: project.runtime,
+            fullPath: project.fullPath,
+            lastSelectedAt: Date.now(),
+          },
+          ...parsed.filter((entry) => entry?.projectName && entry.projectName !== project.name),
+        ].slice(0, MAX_ENTRIES);
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+        window.dispatchEvent(
+          new CustomEvent('recent-projects:sync', { detail: { sourceId: 'sidebar-controller' } }),
+        );
+      } catch {
+        // localStorage unavailable
+      }
     },
     [onProjectSelect, setCurrentProject],
   );
@@ -708,6 +749,112 @@ export function useSidebarController({
     setSidebarVisible(true);
   }, [setSidebarVisible]);
 
+  const seenRemoteHostsRef = useRef<Set<string>>(new Set(
+    (() => {
+      if (typeof window === 'undefined') return [];
+      try {
+        const raw = window.localStorage.getItem('sidebar-seen-remote-hosts');
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed.filter((value) => typeof value === 'string') : [];
+      } catch {
+        return [];
+      }
+    })(),
+  ));
+
+  useEffect(() => {
+    const discoveredHostIds = new Set<string>();
+    for (const project of projects) {
+      const remoteMeta = (project as unknown as { remote?: { hostId?: string } }).remote;
+      if (project.runtime === 'remote_host' && remoteMeta?.hostId) {
+        discoveredHostIds.add(remoteMeta.hostId);
+      }
+    }
+
+    if (discoveredHostIds.size === 0) {
+      return;
+    }
+
+    const newlySeen: string[] = [];
+    for (const hostId of discoveredHostIds) {
+      if (!seenRemoteHostsRef.current.has(hostId)) {
+        seenRemoteHostsRef.current.add(hostId);
+        newlySeen.push(hostId);
+      }
+    }
+
+    if (newlySeen.length === 0) {
+      return;
+    }
+
+    try {
+      window.localStorage.setItem(
+        'sidebar-seen-remote-hosts',
+        JSON.stringify(Array.from(seenRemoteHostsRef.current)),
+      );
+    } catch {
+      // localStorage unavailable
+    }
+
+    setExpandedRemoteHosts((prev) => {
+      const next = new Set(prev);
+      for (const hostId of newlySeen) {
+        next.add(hostId);
+      }
+      try {
+        window.localStorage.setItem('sidebar-expanded-remote-hosts', JSON.stringify(Array.from(next)));
+      } catch {
+        // localStorage unavailable
+      }
+      return next;
+    });
+  }, [projects]);
+
+  const toggleRemoteHost = useCallback((hostId: string) => {
+    setExpandedRemoteHosts((prev) => {
+      const next = new Set(prev);
+      if (next.has(hostId)) {
+        next.delete(hostId);
+      } else {
+        next.add(hostId);
+      }
+      try {
+        window.localStorage.setItem('sidebar-expanded-remote-hosts', JSON.stringify(Array.from(next)));
+      } catch {
+        // localStorage unavailable
+      }
+      return next;
+    });
+  }, []);
+
+  const refreshSingleProjectSessions = useCallback(async (project: Project) => {
+    setLoadingSessions((prev) => ({ ...prev, [project.name]: true }));
+    setAdditionalSessions((prev) => {
+      if (!prev[project.name]) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[project.name];
+      return next;
+    });
+    setProjectHasMoreOverrides((prev) => {
+      if (!prev[project.name]) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[project.name];
+      return next;
+    });
+    try {
+      await onRefresh();
+    } catch (error) {
+      console.error('Failed to refresh sessions for project', project.name, error);
+    } finally {
+      setLoadingSessions((prev) => ({ ...prev, [project.name]: false }));
+    }
+  }, [onRefresh]);
+
   return {
     isSidebarCollapsed,
     expandedProjects,
@@ -748,6 +895,9 @@ export function useSidebarController({
     updateSessionSummary,
     collapseSidebar,
     expandSidebar,
+    refreshSingleProjectSessions,
+    expandedRemoteHosts,
+    toggleRemoteHost,
     setShowNewProject,
     setEditingName,
     setEditingSession,

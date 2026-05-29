@@ -144,7 +144,7 @@ export function useChatRealtimeHandlers({
   };
 
   const scheduleProjectRefresh = (delayMs = 150) => {
-    if (!window.refreshProjects) {
+    if (!window.refreshProjectsBackground) {
       return;
     }
 
@@ -160,7 +160,7 @@ export function useChatRealtimeHandlers({
     projectRefreshTimeoutRef.current = window.setTimeout(() => {
       projectRefreshTimeoutRef.current = null;
       lastProjectRefreshAtRef.current = Date.now();
-      void window.refreshProjects?.();
+      void window.refreshProjectsBackground?.();
     }, effectiveDelay);
   };
 

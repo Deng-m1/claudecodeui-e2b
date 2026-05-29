@@ -87,14 +87,16 @@ const buildCloudProject = () => ({
   },
 });
 
-// KNOWN ISSUE — useChat...sendMessage currently keys command type off
-// `project.runtime` instead of `selectedSession.__runtime`, so when a project
-// row reports `runtime: 'e2b'` the local Codex session reuses the e2b
-// adapter and silently swallows the outbound payload. Marked fixme until
-// the chat-runtime dispatcher is taught to prefer `selectedSession.__runtime`
-// when the session is explicitly local. Re-run with `npx playwright test
-// tests/e2e/local-session-regressions.spec.ts:90` after the fix lands.
-test.fixme('selected local session still sends a local command when project payload reports e2b runtime', async ({
+// Regression — when a project row reports `runtime: 'e2b'` but the user is
+// on a local Codex session resolved via the bootstrap response, every project
+// refresh used to re-derive `selectedSession.__runtime` from `project.runtime`
+// and silently upgrade the session to e2b, routing the chat through the e2b
+// adapter and dropping the outbound payload. Fixed by preserving the
+// explicitly resolved metadata inside `findMatchingSessionInProject` and the
+// route-resolution `useEffect` in `useProjectsState.ts`, so subsequent project
+// merges no longer clobber `__runtime` / `__provider` / `__projectName` /
+// `__projectPath`.
+test('selected local session still sends a local command when project payload reports e2b runtime', async ({
   page,
 }) => {
   const contaminatedProject = buildLocalProject({

@@ -480,6 +480,9 @@ async function setupProjectsWatcher() {
 
 const app = express();
 const server = http.createServer(app);
+const FORCE_VITE_DEV_SERVER = ['1', 'true', 'yes'].includes(
+    String(process.env.CLAUDE_CODE_UI_FORCE_VITE_DEV_SERVER || '').toLowerCase()
+);
 
 const ptySessionsMap = new Map();
 const PTY_SESSION_TIMEOUT = 30 * 60 * 1000;
@@ -676,21 +679,23 @@ app.use('/api/github', (req, res, next) => {
 // Serve public files (like api-docs.html)
 app.use(express.static(path.join(__dirname, '../public')));
 
-// Static files served after API routes
-// Add cache control: HTML files should not be cached, but assets can be cached
-app.use(express.static(path.join(__dirname, '../dist'), {
-    setHeaders: (res, filePath) => {
-        if (filePath.endsWith('.html')) {
-            // Prevent HTML caching to avoid service worker issues after builds
-            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-            res.setHeader('Pragma', 'no-cache');
-            res.setHeader('Expires', '0');
-        } else if (filePath.match(/\.(js|css|woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico)$/)) {
-            // Cache static assets for 1 year (they have hashed names)
-            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+// Static files served after API routes.
+// In full dev mode, avoid serving stale dist assets so source changes are always loaded from Vite.
+if (!FORCE_VITE_DEV_SERVER) {
+    app.use(express.static(path.join(__dirname, '../dist'), {
+        setHeaders: (res, filePath) => {
+            if (filePath.endsWith('.html')) {
+                // Prevent HTML caching to avoid service worker issues after builds
+                res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+                res.setHeader('Pragma', 'no-cache');
+                res.setHeader('Expires', '0');
+            } else if (filePath.match(/\.(js|css|woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico)$/)) {
+                // Cache static assets for 1 year (they have hashed names)
+                res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+            }
         }
-    }
-}));
+    }));
+}
 
 // API Routes (protected)
 // /api/config endpoint removed - no longer needed
@@ -2642,8 +2647,11 @@ app.get('*', (req, res) => {
     // Static assets should already be handled by express.static middleware above
     const indexPath = path.join(__dirname, '../dist/index.html');
 
-    // Check if dist/index.html exists (production build available)
-    if (fs.existsSync(indexPath)) {
+    if (FORCE_VITE_DEV_SERVER) {
+        const redirectHost = getConnectableHost(req.hostname);
+        const redirectPath = req.originalUrl || '/';
+        res.redirect(`${req.protocol}://${redirectHost}:${VITE_PORT}${redirectPath}`);
+    } else if (fs.existsSync(indexPath)) {
         // Set no-cache headers for HTML to prevent service worker issues
         res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
         res.setHeader('Pragma', 'no-cache');
@@ -2652,7 +2660,8 @@ app.get('*', (req, res) => {
     } else {
         // In development, redirect to Vite dev server only if dist doesn't exist
         const redirectHost = getConnectableHost(req.hostname);
-        res.redirect(`${req.protocol}://${redirectHost}:${VITE_PORT}`);
+        const redirectPath = req.originalUrl || '/';
+        res.redirect(`${req.protocol}://${redirectHost}:${VITE_PORT}${redirectPath}`);
     }
 });
 
@@ -2756,7 +2765,7 @@ async function startServer() {
 
         // Check if running in production mode (dist folder exists)
         const distIndexPath = path.join(__dirname, '../dist/index.html');
-        const isProduction = fs.existsSync(distIndexPath);
+        const isProduction = !FORCE_VITE_DEV_SERVER && fs.existsSync(distIndexPath);
 
         // Log Claude implementation mode
         console.log(`${c.info('[INFO]')} Using Claude Agents SDK for Claude integration`);
@@ -2764,6 +2773,10 @@ async function startServer() {
 
         if (isProduction) {
             console.log(`${c.info('[INFO]')} To run in production mode, go to http://${DISPLAY_HOST}:${SERVER_PORT}`);            
+        }
+
+        if (FORCE_VITE_DEV_SERVER) {
+            console.log(`${c.info('[INFO]')} HTML routes are using the Vite dev server even if dist exists`);
         }
 
         console.log(`${c.info('[INFO]')} To run in development mode with hot-module replacement, go to http://${DISPLAY_HOST}:${VITE_PORT}`);

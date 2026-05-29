@@ -1548,6 +1548,28 @@ const remoteWorkspacesDb = {
 
     return result.changes > 0;
   },
+
+  update: (userId, id, { displayName } = {}) => {
+    const current = remoteWorkspacesDb.getById(userId, id);
+    if (!current) {
+      return null;
+    }
+
+    const nextDisplayName =
+      displayName === undefined
+        ? current.display_name
+        : displayName === null || displayName === ''
+          ? null
+          : String(displayName).trim() || null;
+
+    db.prepare(`
+      UPDATE remote_workspaces
+      SET display_name = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE user_id = ? AND id = ?
+    `).run(nextDisplayName, userId, id);
+
+    return remoteWorkspacesDb.getById(userId, id);
+  },
 };
 
 const REMOTE_HOST_SESSION_SELECT_WITH_MESSAGE_COUNTS = `

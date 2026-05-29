@@ -52,6 +52,10 @@ function MainContent({
   onNavigateToSession,
   onShowSettings,
   externalMessageUpdate,
+  projects,
+  onProjectSelect,
+  onOpenSessionLauncher,
+  onOpenRemoteHostSettings,
 }: MainContentProps) {
   const { preferences } = useUiPreferences();
   const { autoExpandTools, showRawParameters, showThinking, autoScrollToBottom, sendByCtrlEnter } = preferences;
@@ -121,7 +125,17 @@ function MainContent({
   }
 
   if (!selectedProject) {
-    return <MainContentStateView mode="empty" isMobile={isMobile} onMenuClick={onMenuClick} />;
+    return (
+      <MainContentStateView
+        mode="empty"
+        isMobile={isMobile}
+        onMenuClick={onMenuClick}
+        projects={projects}
+        onProjectSelect={onProjectSelect}
+        onOpenSessionLauncher={onOpenSessionLauncher}
+        onOpenRemoteHostSettings={onOpenRemoteHostSettings}
+      />
+    );
   }
 
   return (

@@ -1,4 +1,4 @@
-import { Check, ChevronDown, ChevronRight, Cloud, Edit3, Folder, FolderOpen, Star, Trash2, X, MoreVertical } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Cloud, Edit3, Folder, FolderOpen, RefreshCw, Star, Trash2, X, MoreVertical } from 'lucide-react';
 import type React from 'react';
 import type { TFunction } from 'i18next';
 import { cn } from '../../../../lib/utils';
@@ -45,6 +45,7 @@ type SidebarProjectItemProps = {
     runtime?: RuntimeMode,
   ) => void;
   onLoadMoreSessions: (project: Project) => void;
+  onRefreshProjectSessions: (project: Project) => void;
   onNewSession: (project: Project) => void;
   onEditingSessionNameChange: (value: string) => void;
   onStartEditingSession: (sessionId: string, initialName: string) => void;
@@ -128,6 +129,7 @@ export default function SidebarProjectItem({
   onSessionSelect,
   onDeleteSession,
   onLoadMoreSessions,
+  onRefreshProjectSessions,
   onNewSession,
   onEditingSessionNameChange,
   onStartEditingSession,
@@ -137,6 +139,7 @@ export default function SidebarProjectItem({
 }: SidebarProjectItemProps) {
   const isSelected = selectedProject?.name === project.name;
   const isEditing = editingProject === project.name;
+  const isRemoteProject = project.runtime === 'remote_host';
   const hasMoreSessions = resolveProjectLoadMoreProvider(project, sessionProviderFilter) !== null;
   const sessionCountDisplay = getSessionCountDisplay(sessions, hasMoreSessions);
   const cloudSectionLabel = t('projects.cloudSection', { defaultValue: 'Cloud' });
@@ -255,12 +258,12 @@ export default function SidebarProjectItem({
                           />
 
                           {isCloudProject && (
-                            <span className="inline-block max-w-[60px] flex-shrink-0 truncate rounded-md bg-gradient-to-r from-sky-500/15 to-sky-600/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-sky-700 shadow-sm ring-1 ring-sky-500/20 dark:from-sky-500/20 dark:to-sky-600/20 dark:text-sky-300 dark:ring-sky-400/30">
+                            <span className="inline-block max-w-[60px] flex-shrink-0 truncate rounded-md bg-gradient-to-r from-sky-500/15 to-sky-600/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-700 shadow-sm ring-1 ring-sky-500/20 dark:from-sky-500/20 dark:to-sky-600/20 dark:text-sky-300 dark:ring-sky-400/30">
                               {cloudSectionLabel}
                             </span>
                           )}
                           {isCloudProject && cloudStatus && (
-                            <span className="inline-block max-w-[70px] flex-shrink-0 truncate rounded-md bg-gradient-to-r from-slate-100 to-slate-200/80 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-slate-700 shadow-sm ring-1 ring-slate-300/40 dark:from-slate-800/80 dark:to-slate-900/80 dark:text-slate-300 dark:ring-slate-700/50">
+                            <span className="inline-block max-w-[70px] flex-shrink-0 truncate rounded-md bg-gradient-to-r from-slate-100 to-slate-200/80 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-700 shadow-sm ring-1 ring-slate-300/40 dark:from-slate-800/80 dark:to-slate-900/80 dark:text-slate-300 dark:ring-slate-700/50">
                               {cloudStatus}
                             </span>
                           )}
@@ -273,11 +276,11 @@ export default function SidebarProjectItem({
                           />
                         )}
                       </div>
-                      <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                      <p className="mt-0.5 truncate text-xs text-muted-foreground">
                         {isCloudProject ? cloudSummary || cloudSectionLabel : sessionCountLabel}
                       </p>
                       {isCloudProject && (
-                        <p className="mt-0.5 truncate text-[10px] text-muted-foreground/70">
+                        <p className="mt-0.5 truncate text-[11px] text-muted-foreground/70">
                           {sessionCountLabel}
                           {cloudWorkspacePath ? ` • ${truncatePath(cloudWorkspacePath, 26)}` : ''}
                         </p>
@@ -391,7 +394,30 @@ export default function SidebarProjectItem({
                         <div className="min-w-0 truncate text-sm font-semibold text-foreground" title={project.displayName}>
                           {project.displayName}
                         </div>
-                        
+
+                        {isRemoteProject && (
+                          <button
+                            type="button"
+                            data-testid="sidebar-project-refresh"
+                            data-project-name={project.name}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onRefreshProjectSessions(project);
+                            }}
+                            disabled={isLoadingSessions}
+                            className={cn(
+                              'flex h-5 w-5 flex-shrink-0 items-center justify-center rounded text-muted-foreground transition-colors',
+                              'hover:bg-accent hover:text-foreground',
+                              isLoadingSessions
+                                ? 'opacity-100'
+                                : 'opacity-0 group-hover:opacity-100 focus:opacity-100',
+                            )}
+                            title={t('tooltips.refreshProject', { defaultValue: 'Refresh sessions' })}
+                          >
+                            <RefreshCw className={cn('h-3.5 w-3.5', isLoadingSessions && 'animate-spin')} />
+                          </button>
+                        )}
+
                         <ProjectActionsMenu
                           isStarred={isStarred}
                           onToggleStar={(e) => { e.stopPropagation(); toggleStarProject(); }}
@@ -401,12 +427,12 @@ export default function SidebarProjectItem({
                         />
 
                         {isCloudProject && (
-                          <span className="inline-block max-w-[60px] flex-shrink-0 truncate rounded-md bg-gradient-to-r from-sky-500/15 to-sky-600/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-sky-700 shadow-sm ring-1 ring-sky-500/20 dark:from-sky-500/20 dark:to-sky-600/20 dark:text-sky-300 dark:ring-sky-400/30">
+                          <span className="inline-block max-w-[60px] flex-shrink-0 truncate rounded-md bg-gradient-to-r from-sky-500/15 to-sky-600/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-700 shadow-sm ring-1 ring-sky-500/20 dark:from-sky-500/20 dark:to-sky-600/20 dark:text-sky-300 dark:ring-sky-400/30">
                             {cloudSectionLabel}
                           </span>
                         )}
                         {isCloudProject && cloudStatus && (
-                          <span className="inline-block max-w-[70px] flex-shrink-0 truncate rounded-md bg-gradient-to-r from-slate-100 to-slate-200/80 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-slate-700 shadow-sm ring-1 ring-slate-300/40 dark:from-slate-800/80 dark:to-slate-900/80 dark:text-slate-300 dark:ring-slate-700/50">
+                          <span className="inline-block max-w-[70px] flex-shrink-0 truncate rounded-md bg-gradient-to-r from-slate-100 to-slate-200/80 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-700 shadow-sm ring-1 ring-slate-300/40 dark:from-slate-800/80 dark:to-slate-900/80 dark:text-slate-300 dark:ring-slate-700/50">
                             {cloudStatus}
                           </span>
                         )}
@@ -453,7 +479,7 @@ export default function SidebarProjectItem({
                     </div>
 
                     {isCloudProject && (
-                      <div className="mt-0.5 truncate text-[11px] text-muted-foreground/70">
+                      <div className="mt-0.5 truncate text-xs text-muted-foreground/70">
                         {sessionCountLabel}
                         {cloudWorkspacePath && (
                           <span className="ml-1 opacity-70" title={cloudWorkspacePath}>

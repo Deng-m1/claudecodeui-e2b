@@ -1,8 +1,9 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useDeviceSettings } from '../../../hooks/useDeviceSettings';
 import { useVersionCheck } from '../../../hooks/useVersionCheck';
 import { useUiPreferences } from '../../../hooks/useUiPreferences';
+import { useSidebarWidth } from '../../../hooks/useSidebarWidth';
 import { useSidebarController } from '../hooks/useSidebarController';
 import { useTaskMaster } from '../../../contexts/TaskMasterContext';
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
@@ -11,6 +12,7 @@ import type { MCPServerStatus, SidebarProps } from '../types/types';
 import SidebarCollapsed from './subcomponents/SidebarCollapsed';
 import SidebarContent from './subcomponents/SidebarContent';
 import SidebarModals from './subcomponents/SidebarModals';
+import SidebarRemoteHostBrowser from './subcomponents/SidebarRemoteHostBrowser';
 import type { SidebarProjectListProps } from './subcomponents/SidebarProjectList';
 
 type TaskMasterSidebarContext = {
@@ -44,6 +46,7 @@ function Sidebar({
   );
   const { preferences, setPreference } = useUiPreferences();
   const { sidebarVisible } = preferences;
+  const { width: sidebarWidth, setWidth: setSidebarWidth } = useSidebarWidth();
   const { setCurrentProject, mcpServerStatus } = useTaskMaster() as TaskMasterSidebarContext;
   const { tasksEnabled } = useTasksSettings();
 
@@ -88,6 +91,9 @@ function Sidebar({
     loadMoreSessions,
     handleProjectSelect,
     refreshProjects,
+    refreshSingleProjectSessions,
+    expandedRemoteHosts,
+    toggleRemoteHost,
     updateSessionSummary,
     collapseSidebar: handleCollapseSidebar,
     expandSidebar: handleExpandSidebar,
@@ -148,6 +154,22 @@ function Sidebar({
     window.location.reload();
   };
 
+  const [hostBrowserState, setHostBrowserState] = useState<{ hostId: string; label: string } | null>(null);
+
+  const openHostBrowser = (hostId: string) => {
+    const candidate = projects.find((project) => {
+      const meta = (project as unknown as { remote?: { hostId?: string; label?: string } }).remote;
+      return meta && meta.hostId === hostId;
+    });
+    const meta = candidate
+      ? (candidate as unknown as { remote?: { hostId?: string; label?: string } }).remote
+      : undefined;
+    setHostBrowserState({
+      hostId,
+      label: meta?.label || t('projects.unknownRemoteHost', { defaultValue: 'Remote host' }),
+    });
+  };
+
   const projectListProps: SidebarProjectListProps = {
     projects,
     filteredProjects,
@@ -183,6 +205,15 @@ function Sidebar({
     onDeleteSession: showDeleteSessionConfirmation,
     onLoadMoreSessions: (project) => {
       void loadMoreSessions(project);
+    },
+    onRefreshProjectSessions: (project) => {
+      void refreshSingleProjectSessions(project);
+    },
+    expandedRemoteHosts,
+    onToggleRemoteHost: toggleRemoteHost,
+    onAddWorkspaceForHost: openHostBrowser,
+    onRefreshAllProjects: () => {
+      void refreshProjects();
     },
     onNewSession,
     onEditingSessionNameChange: setEditingSessionName,
@@ -231,6 +262,17 @@ function Sidebar({
         installMode={installMode}
         t={t}
       />
+
+      {hostBrowserState && (
+        <SidebarRemoteHostBrowser
+          hostId={hostBrowserState.hostId}
+          hostLabel={hostBrowserState.label}
+          onClose={() => setHostBrowserState(null)}
+          onWorkspaceAdded={() => {
+            void refreshProjects();
+          }}
+        />
+      )}
 
       {isSidebarCollapsed ? (
         <SidebarCollapsed
@@ -295,6 +337,8 @@ function Sidebar({
             onShowVersionModal={() => setShowVersionModal(true)}
             onShowSettings={onShowSettings}
             projectListProps={projectListProps}
+            sidebarWidth={sidebarWidth}
+            onSidebarWidthChange={setSidebarWidth}
             t={t}
           />
         </>

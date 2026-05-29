@@ -9,6 +9,7 @@ import type { SidebarSessionProviderFilter } from '../../types/types';
 import SidebarFooter from './SidebarFooter';
 import SidebarHeader from './SidebarHeader';
 import SidebarProjectList, { type SidebarProjectListProps } from './SidebarProjectList';
+import SidebarResizeHandle from './SidebarResizeHandle';
 
 type SearchMode = 'projects' | 'conversations';
 
@@ -62,6 +63,8 @@ type SidebarContentProps = {
   onShowVersionModal: () => void;
   onShowSettings: () => void;
   projectListProps: SidebarProjectListProps;
+  sidebarWidth: number;
+  onSidebarWidthChange: (next: number) => void;
   t: TFunction;
 };
 
@@ -91,6 +94,8 @@ export default function SidebarContent({
   onShowVersionModal,
   onShowSettings,
   projectListProps,
+  sidebarWidth,
+  onSidebarWidthChange,
   t,
 }: SidebarContentProps) {
   const showConversationSearch = searchMode === 'conversations' && searchFilter.trim().length >= 2;
@@ -99,8 +104,9 @@ export default function SidebarContent({
   return (
     <div
       data-testid="sidebar-root"
-      className="flex h-full flex-col overflow-hidden bg-background/80 backdrop-blur-sm md:w-72 md:select-none"
-      style={{}}
+      className="relative flex h-full w-full flex-col overflow-hidden bg-background/80 backdrop-blur-sm md:select-none"
+      style={isMobile ? undefined : { width: `${sidebarWidth}px` }}
+      data-sidebar-width={sidebarWidth}
     >
       <SidebarHeader
         isPWA={isPWA}
@@ -229,6 +235,10 @@ export default function SidebarContent({
         onShowSettings={onShowSettings}
         t={t}
       />
+
+      {!isMobile && (
+        <SidebarResizeHandle width={sidebarWidth} onChange={onSidebarWidthChange} />
+      )}
     </div>
   );
 }

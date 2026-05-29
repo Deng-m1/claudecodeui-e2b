@@ -1724,6 +1724,49 @@ router.delete('/workspaces/:workspaceId', async (req, res) => {
   }
 });
 
+router.patch('/workspaces/:workspaceId', async (req, res) => {
+  try {
+    const workspace = remoteWorkspacesDb.getById(req.user.id, req.params.workspaceId);
+    if (!workspace) {
+      return res.status(404).json({ success: false, error: 'Remote workspace not found' });
+    }
+
+    const updates = {};
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'displayName')) {
+      const raw = req.body.displayName;
+      updates.displayName =
+        raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '')
+          ? null
+          : String(raw).trim();
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ success: false, error: 'No supported fields to update' });
+    }
+
+    const updated = remoteWorkspacesDb.update(req.user.id, req.params.workspaceId, updates);
+    if (!updated) {
+      return res.status(404).json({ success: false, error: 'Remote workspace not found' });
+    }
+
+    const host = remoteHostsDb.getById(req.user.id, updated.remote_host_id);
+    const response = host ? buildRemoteHostResponse(host, [updated]).workspaces[0] : {
+      id: updated.id,
+      remoteHostId: updated.remote_host_id,
+      displayName: updated.display_name,
+      workspaceRoot: updated.workspace_root,
+      status: updated.status,
+      createdAt: updated.created_at,
+      updatedAt: updated.updated_at,
+    };
+
+    res.json({ success: true, workspace: response });
+  } catch (error) {
+    console.error('[Remote Hosts] Update workspace failed:', error);
+    res.status(500).json({ success: false, error: error.message || 'Failed to update remote workspace' });
+  }
+});
+
 router.delete('/:hostId', async (req, res) => {
   try {
     const success = remoteHostsDb.delete(req.user.id, req.params.hostId);

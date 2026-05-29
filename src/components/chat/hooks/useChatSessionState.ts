@@ -522,8 +522,15 @@ export function useChatSessionState({
     const requestProjectName = transportProjectName;
     const requestProjectPath = transportProjectPath;
 
-    // Fetch from server → store updates → chatMessages re-derives automatically
-    setIsLoadingSessionMessages(true);
+    // Fast-path: if the target session already has messages cached in
+    // sessionStore (we previously visited it during this app lifetime), skip
+    // the visible "Loading session messages…" placeholder so the chat pane
+    // renders the cached transcript instantly. The fetch still runs below to
+    // pull any new server-side messages, but it runs silently in the
+    // background so a session switch never blocks the UI on a network
+    // round-trip — which is the user-facing definition of "fast session
+    // switching that doesn't stutter".
+    setIsLoadingSessionMessages(!hasLoadedSelectedSessionMessages);
     sessionStore.fetchFromServer(requestSessionId, {
       provider,
       projectName: requestProjectName,

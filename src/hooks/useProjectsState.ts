@@ -94,6 +94,16 @@ const normalizeSessionSelection = (
   };
 };
 
+const mergeKnownSessionState = (
+  incomingSession: ProjectSession,
+  currentSession: ProjectSession | null,
+  knownSession: ProjectSession | null,
+): ProjectSession => ({
+  ...(currentSession?.id === incomingSession.id ? currentSession : {}),
+  ...(knownSession?.id === incomingSession.id ? knownSession : {}),
+  ...incomingSession,
+});
+
 const projectsHaveChanges = (
   prevProjects: Project[],
   nextProjects: Project[],
@@ -179,7 +189,22 @@ const findMatchingSessionInProject = (
   for (const sessions of sessionLists) {
     const matchedSession = sessions.find((session) => session.id === targetSession.id);
     if (matchedSession) {
-      return matchedSession;
+      // Carry over the explicit resolution metadata from the currently selected
+      // session. Raw session rows fetched from /api/projects do not carry
+      // __runtime / __provider, so downstream `normalizeSessionSelection` would
+      // otherwise fall back to `project.runtime`. When a project payload
+      // reports `runtime: 'e2b'` but the actual selected session was resolved
+      // as `local` (e.g. from a bootstrap response), that fallback silently
+      // upgrades the runtime to e2b and routes the chat through the e2b
+      // adapter, dropping the outbound payload. Preserving the previously
+      // resolved metadata keeps the runtime stable across project refreshes.
+      return {
+        ...matchedSession,
+        ...(targetSession.__provider ? { __provider: targetSession.__provider } : {}),
+        ...(targetSession.__runtime ? { __runtime: targetSession.__runtime } : {}),
+        ...(targetSession.__projectName ? { __projectName: targetSession.__projectName } : {}),
+        ...(targetSession.__projectPath ? { __projectPath: targetSession.__projectPath } : {}),
+      };
     }
   }
 
@@ -637,6 +662,8 @@ export function useProjectsState({
 
   const loadingProgressTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const backgroundHydrationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const backgroundRefreshInFlightRef = useRef(false);
+  const lastBackgroundRefreshAtRef = useRef(0);
   const lastProcessedMessageSequenceRef = useRef(0);
 
   const fetchProjects = useCallback(async ({ showLoadingState = true, preserveSession = null }: FetchProjectsOptions = {}) => {
@@ -761,6 +788,36 @@ export function useProjectsState({
 
           return mergePage(currentProject);
         });
+
+        setSelectedSession((currentSession) => {
+          if (!currentSession?.id) {
+            return currentSession;
+          }
+
+          const currentProject = selectedProjectRef.current;
+          const belongsToHydratedProject =
+            currentSession.__projectName === project.name ||
+            currentProject?.name === project.name;
+
+          if (!belongsToHydratedProject) {
+            return currentSession;
+          }
+
+          const hydratedProject =
+            currentProject?.name === project.name
+              ? mergePage(currentProject)
+              : mergePage(project);
+          const hydratedSession = findMatchingSessionInProject(hydratedProject, currentSession);
+
+          if (!hydratedSession) {
+            return currentSession;
+          }
+
+          const normalizedHydratedSession = normalizeSessionSelection(hydratedSession, hydratedProject);
+          return serialize(currentSession) === serialize(normalizedHydratedSession)
+            ? currentSession
+            : normalizedHydratedSession;
+        });
       } catch (error) {
         console.error('Error hydrating project provider sessions:', error);
       }
@@ -773,6 +830,27 @@ export function useProjectsState({
     await fetchProjects({ showLoadingState: false });
   }, [fetchProjects]);
 
+  const refreshProjectsBackground = useCallback(async ({ preserveSession = null }: FetchProjectsOptions = {}) => {
+    const cooldownMs = 2_000;
+    if (backgroundRefreshInFlightRef.current) {
+      return;
+    }
+
+    const elapsed = Date.now() - lastBackgroundRefreshAtRef.current;
+    if (lastBackgroundRefreshAtRef.current > 0 && elapsed < cooldownMs) {
+      return;
+    }
+
+    backgroundRefreshInFlightRef.current = true;
+    lastBackgroundRefreshAtRef.current = Date.now();
+
+    try {
+      await fetchProjects({ showLoadingState: false, preserveSession });
+    } finally {
+      backgroundRefreshInFlightRef.current = false;
+    }
+  }, [fetchProjects]);
+
   const scheduleProjectsHydration = useCallback((preserveSession: ProjectSession | null = null) => {
     if (backgroundHydrationTimeoutRef.current) {
       return;
@@ -780,9 +858,9 @@ export function useProjectsState({
 
     backgroundHydrationTimeoutRef.current = setTimeout(() => {
       backgroundHydrationTimeoutRef.current = null;
-      void fetchProjects({ showLoadingState: false, preserveSession });
+      void refreshProjectsBackground({ preserveSession });
     }, 1500);
-  }, [fetchProjects]);
+  }, [refreshProjectsBackground]);
 
   const openSettings = useCallback((tab = 'tools') => {
     setSettingsInitialTab(tab);
@@ -819,10 +897,37 @@ export function useProjectsState({
           return;
         }
 
+        const knownProject =
+          (selectedProjectRef.current?.name === payload.project.name ? selectedProjectRef.current : null) ||
+          projectsRef.current.find((project) => project.name === payload.project.name) ||
+          null;
+        const nextBootstrapProject = knownProject
+          ? mergeProjectState(knownProject, payload.project)
+          : payload.project;
+        const bootstrapSessionCandidate: ProjectSession = {
+          ...payload.session,
+          __projectName: payload.session.__projectName || payload.project.name,
+          __projectPath:
+            payload.session.__projectPath ||
+            payload.project.cloud?.workspacePath ||
+            payload.project.fullPath ||
+            payload.project.path ||
+            '',
+        };
+        const matchedKnownSession = findMatchingSessionInProject(
+          nextBootstrapProject,
+          bootstrapSessionCandidate,
+        );
+        const nextBootstrapSession = mergeKnownSessionState(
+          bootstrapSessionCandidate,
+          selectedSessionRef.current,
+          matchedKnownSession,
+        );
+
         setProjects((prevProjects) => {
           const existingIndex = prevProjects.findIndex((project) => project.name === payload.project.name);
           if (existingIndex === -1) {
-            return [payload.project, ...prevProjects];
+            return [nextBootstrapProject, ...prevProjects];
           }
 
           const nextProjects = [...prevProjects];
@@ -831,15 +936,20 @@ export function useProjectsState({
         });
         setSelectedProject((currentProject) => {
           if (!currentProject || currentProject.name !== payload.project.name) {
-            return payload.project;
+            return nextBootstrapProject;
           }
 
-          return mergeProjectState(currentProject, payload.project);
+          return serialize(currentProject) === serialize(nextBootstrapProject)
+            ? currentProject
+            : nextBootstrapProject;
         });
-        const normalizedBootstrapSession = normalizeSessionSelection(payload.session, payload.project);
+        const normalizedBootstrapSession = normalizeSessionSelection(
+          nextBootstrapSession,
+          nextBootstrapProject,
+        );
         setSelectedSession(normalizedBootstrapSession);
         setIsLoadingProjects(false);
-        void hydrateProjectProviderSessions(payload.project, normalizedBootstrapSession);
+        void hydrateProjectProviderSessions(nextBootstrapProject, normalizedBootstrapSession);
         scheduleProjectsHydration(normalizedBootstrapSession);
       } catch (error) {
         console.error('Error bootstrapping session route:', error);
@@ -1060,7 +1170,26 @@ export function useProjectsState({
       const rawSession = getProjectSessions(project).find((s) => s.id === sessionId);
       if (!rawSession) return false;
 
-      const normalized = normalizeSessionSelection(rawSession, project);
+      // Preserve metadata that was already resolved on the current selected
+      // session (e.g. via the bootstrap response). normalizeSessionSelection
+      // would otherwise fall back to project.runtime when the raw row from
+      // /api/projects has no __runtime, silently upgrading a `local` session
+      // to `e2b` whenever the project payload reports e2b runtime.
+      const preserved =
+        selectedSession?.id === sessionId
+          ? {
+              ...(selectedSession.__provider ? { __provider: selectedSession.__provider } : {}),
+              ...(selectedSession.__runtime ? { __runtime: selectedSession.__runtime } : {}),
+              ...(selectedSession.__projectName
+                ? { __projectName: selectedSession.__projectName }
+                : {}),
+              ...(selectedSession.__projectPath
+                ? { __projectPath: selectedSession.__projectPath }
+                : {}),
+            }
+          : {};
+
+      const normalized = normalizeSessionSelection({ ...rawSession, ...preserved }, project);
       const shouldUpdateProject = selectedProject?.name !== project.name;
       const shouldUpdateSession =
         selectedSession?.id !== sessionId ||
@@ -1337,6 +1466,7 @@ export function useProjectsState({
     openSettings,
     fetchProjects,
     refreshProjectsSilently,
+    refreshProjectsBackground,
     sidebarSharedProps,
     handleProjectSelect,
     handleSessionSelect,

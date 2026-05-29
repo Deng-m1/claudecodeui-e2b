@@ -54,16 +54,25 @@ export default function ProjectActionsMenu({
     e.stopPropagation();
     if (!isOpen && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect();
-      const menuHeight = 120; // approximate height
-      
+      const menuHeight = 120;
+      const menuWidth = 144;
+      const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : Number.POSITIVE_INFINITY;
+      const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : Number.POSITIVE_INFINITY;
+      const margin = 8;
+
       let top = rect.bottom + 4;
-      if (top + menuHeight > window.innerHeight) {
+      if (top + menuHeight > viewportHeight) {
         top = rect.top - menuHeight - 4;
       }
-      
+
+      let left = rect.left;
+      if (left + menuWidth + margin > viewportWidth) {
+        left = Math.max(margin, rect.right - menuWidth);
+      }
+
       setMenuPosition({
         top,
-        left: rect.left,
+        left,
       });
     }
     setIsOpen(!isOpen);
